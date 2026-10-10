@@ -19,3 +19,9 @@ desktop.ini
 # Local secrets (never commit)
 .env
 .env.*
+
+# Private dev notes (agent conventions, planning, research) — never committed
+dev/
+
+# Rebuildable RAG cache for the repo's own shared-memory scaffold
+.agents/memory/.rag-index.json

@@ -24,38 +24,6 @@ with empty diagnostics. 102 unit/contract tests pass
 
 Requires Python 3.9+ on `PATH` as `python` (hooks) and `muse` 1.x.
 
-```powershell
-# Windows (PowerShell, from this directory)
-.\install.ps1
-```
-
-```bash
-# macOS / Linux
-./install.sh
-```
-
-This runs tests, validates the bundles, installs + approves + enables the plugin
-(user scope), and seeds the stores. Restart `muse` afterwards so hooks load.
-
-Manual equivalent:
-
-```bash
-muse plugins install /path/to/muse-code-memory --scope user
-muse plugins approve muse-memory
-muse plugins enable muse-memory
-PYTHONPATH=/path/to/muse-code-memory python -m muse_memory init
-```
-
-To use plain hook files instead of the plugin (e.g. per-project), copy
-`examples/hooks.json` to `<project>/.muse/hooks.json` and adjust the paths.
-This is best-effort (Muse publishes no project-hooks schema); the plugin is
-the supported path.
-
-### From the Git marketplace
-
-Install without cloning — the repo ships `.agents/plugins/marketplace.json`,
-which Muse reads as the marketplace catalog:
-
 ```bash
 muse plugins marketplace add muse-memory https://github.com/cbuntingde/muse-code-memory.git
 muse plugins install muse-memory@muse-memory
@@ -63,7 +31,11 @@ muse plugins approve muse-memory
 muse plugins enable muse-memory
 ```
 
-Refresh the catalog before upgrading: `muse plugins marketplace update <name>`,
+The repo ships `.agents/plugins/marketplace.json`, which Muse reads as the
+marketplace catalog. Memory stores initialize automatically on the first
+session — no manual seeding needed.
+
+Refresh the catalog before upgrading: `muse plugins marketplace update muse-memory`,
 then `muse plugins update muse-memory`. Restart `muse` afterwards so hooks load.
 
 > **Windows note:** Git-URL marketplace sources currently fail on Windows with
@@ -169,12 +141,11 @@ commands/                  /remember /recall /memories /forget /archive /consoli
 tests/                     102 unittest tests incl. hook + MCP contract tests
 .github/workflows/ci.yml   unittest matrix + bundle validation when muse is present
 examples/                  best-effort hooks.json / settings hooks block
-docs/HOOKS-PLUGINS-RESEARCH.md  what the supplied brief got right/wrong, with sources
 ```
 
 ## Corrections to common hook/plugin write-ups
 
-Research details in `docs/HOOKS-PLUGINS-RESEARCH.md`. Short version:
+Verified against the official docs and the installed Muse Code binary:
 
 - Failure event is `PostToolUseFailure`, not `ToolUseFailure`; 6 more events exist
   (`PreLLMCall`, `PostLLMCall`, `PreCompact`, `PostCompact`, `SubagentStart`,
