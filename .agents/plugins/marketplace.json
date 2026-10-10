@@ -1,0 +1,12 @@
+{
+  "name": "muse-memory",
+  "interface": { "displayName": "Muse Memory" },
+  "plugins": [
+    {
+      "name": "muse-memory",
+      "description": "Automatic cross-session memory with RAG recall, hook-driven capture, and self-maintenance.",
+      "source": { "source": "local", "path": "." },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" }
+    }
+  ]
+}

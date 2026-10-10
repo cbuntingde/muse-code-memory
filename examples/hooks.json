@@ -1,0 +1,61 @@
+{
+  "$comment": "BEST-EFFORT example. Muse docs do not publish the project hooks.json schema; this follows the Claude-compatible wire contract that Muse's own hook runner accepts (snake_case stdin payload, hookSpecificOutput stdout, exit 2 + stderr to block). Prefer installing the plugin instead: muse plugins install C:/ai-development/muse-code-memory --scope user",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/session_start.py"}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/user_prompt_submit.py"}
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/post_tool_use.py"}
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/post_tool_use_failure.py"}
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/pre_compact.py"}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/stop.py"}
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/session_end.py"}
+        ]
+      }
+    ]
+  }
+}

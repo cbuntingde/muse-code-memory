@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muse-memory"
+version = "1.0.0"
+description = "Automatic memory system with RAG for Muse Code CLI"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+muse-memory = "muse_memory.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["muse_memory"]

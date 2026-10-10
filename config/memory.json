@@ -1,0 +1,19 @@
+{
+  "$comment": "Copy to ~/.config/muse/memory/config.json (user) or <repo>/.muse/memory.json (project). All keys optional; unset keys use built-in defaults.",
+  "recall_top_k": 5,
+  "recall_max_chars": 4000,
+  "session_start_max_chars": 2500,
+  "min_score": 0.05,
+  "capture_enabled": true,
+  "capture_tool_result_max_chars": 6000,
+  "capture_min_importance": 2,
+  "max_files_per_scope": 40,
+  "max_chars_per_file": 12000,
+  "max_pending": 200,
+  "dedupe_threshold": 0.85,
+  "merge_threshold": 0.72,
+  "stale_days": 90,
+  "session_consolidation": true,
+  "auto_cleanup": true,
+  "default_scope": "project-personal"
+}

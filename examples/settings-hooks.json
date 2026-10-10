@@ -1,0 +1,22 @@
+{
+  "$comment": "Merge the 'hooks' block into your user settings file (~/.config/muse/settings.json, schema_version 1). Same best-effort caveat as examples/hooks.json: the plugin install is the supported path.",
+  "schema_version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/session_start.py"}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/user_prompt_submit.py"}
+        ]
+      }
+    ]
+  }
+}

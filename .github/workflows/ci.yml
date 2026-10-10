@@ -1,0 +1,27 @@
+name: muse-memory CI
+
+on: [push, pull_request]
+
+jobs:
+  tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.9", "3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: unit tests
+        run: python -m unittest discover -s tests
+      - name: bundle validation
+        shell: bash
+        run: |
+          if command -v muse >/dev/null 2>&1; then
+            muse skills validate ./skills/memory --json
+            muse plugins validate . --json
+          else
+            echo "muse CLI not installed; skipping bundle validation"
+          fi
