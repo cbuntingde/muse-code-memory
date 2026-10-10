@@ -50,6 +50,20 @@ Full official event list: `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
 | 4 | Hooks map lifecycle events to argv command strings | Correct in spirit: structured argv arrays (`["python", "hooks/x.py"]`), one event per hook id, each hook source path unique |
 | 5 | Flag only needed for management; installed hooks fire normally | Correct for 0.2.x; moot now that no flag is needed |
 
+## Marketplaces (verified October 2026 against Muse 1.4.3 on Windows)
+
+- `marketplace add <name> <source>` accepts a local dir (verified:
+  `plugin_count: 1, skipped: []` against this repo) and Git URLs; the catalog
+  is `.agents/plugins/marketplace.json` (Codex shape, `{"source": "local",
+  "path": "."}` for a repo-root plugin).
+- **Git sources are broken on Windows in this build**: the clone is shelled
+  through GNU `timeout --kill-after=...`, which resolves to
+  `System32\timeout.exe` and fails with `ERROR: Invalid syntax. Default option
+  is not allowed more than '1' time(s).` (reproduced byte-identical). No
+  user-side fix — Windows searches System32 before `PATH`, so even Git's own
+  `usr/bin/timeout.exe` on `PATH` does not help. Workaround: clone manually,
+  then `marketplace add` the local path.
+
 ## Memory paths (observed on this machine)
 
 - Config: `~/.config/muse/settings.json` (requires `"schema_version": 1`)

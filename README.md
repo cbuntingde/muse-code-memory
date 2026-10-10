@@ -66,6 +66,19 @@ muse plugins enable muse-memory
 Refresh the catalog before upgrading: `muse plugins marketplace update <name>`,
 then `muse plugins update muse-memory`. Restart `muse` afterwards so hooks load.
 
+> **Windows note:** Git-URL marketplace sources currently fail on Windows with
+> `ERROR: Invalid syntax. Default option is not allowed more than '1' time(s).`
+> Muse shells its clone through GNU `timeout`, but Windows resolves that to
+> `System32\timeout.exe`, which rejects the flags (verified byte-identical).
+> There is no user-side fix — Windows searches System32 before `PATH`.
+> Workaround: clone first, then add the local path:
+>
+> ```powershell
+> git clone https://github.com/cbuntingde/muse-code-memory.git
+> muse plugins marketplace add muse-memory .\muse-code-memory
+> muse plugins install muse-memory@muse-memory
+> ```
+
 ## How it works
 
 ```
