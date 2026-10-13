@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-SERVER_INFO = {"name": "muse-memory", "version": "1.0.0"}
+SERVER_INFO = {"name": "muse-memory", "version": "1.0.1"}
 
 TOOLS = [
     {
@@ -248,8 +248,23 @@ def respond(req_id, result=None, error=None) -> None:
     sys.stdout.flush()
 
 
+def _stdin_lines():
+    """Yield input lines decoded as UTF-8.
+
+    Real stdio is read as bytes: sys.stdin would use the locale codec
+    (cp1252 on Windows), mojibaking non-ASCII content. Text streams
+    (tests, unusual hosts) are used as-is.
+    """
+    stream = getattr(sys.stdin, "buffer", None)
+    if stream is None:
+        yield from sys.stdin
+        return
+    for raw in stream:
+        yield raw.decode("utf-8", "replace")
+
+
 def serve() -> None:
-    for line in sys.stdin:
+    for line in _stdin_lines():
         line = line.strip()
         if not line:
             continue

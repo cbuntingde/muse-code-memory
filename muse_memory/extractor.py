@@ -54,6 +54,29 @@ GLOBAL_HINTS = re.compile(
 MAX_CANDIDATE_CHARS = 600
 MIN_CANDIDATE_WORDS = 5
 
+# Machine artifacts (tool payload JSON, code dumps, escaped strings) that
+# regex heuristics must never turn into memories. Used both as a capture
+# guard and by consolidation.retire_fragments to sweep already-filed junk.
+FRAGMENT_MARKERS: list[tuple[str, re.Pattern]] = [
+    ("json-payload", re.compile(
+        r'\{"|"filePath"|structuredPatch|"oldStart"|"newStart"|'
+        r'"find":|"replace":')),
+    ("json-fragment", re.compile(r'"\),|",\s"|\\"')),
+    ("escaped-text", re.compile(r"\\n|\\t|\\r")),
+    ("line-numbered", re.compile(r"(?:^|[\s(])\d{1,5}\|\s")),
+    ("mojibake", re.compile("[\ufffd]|\u00ef\u00bf\u00bd|\u00e2\u20ac")),
+    ("session-path", re.compile(
+        r"muse[/\\]sessions|\btool-outputs\b|\bcall_01")),
+]
+
+
+def fragment_reason(text: str) -> str | None:
+    """Name of the first machine-artifact marker found in text, or None."""
+    for name, pattern in FRAGMENT_MARKERS:
+        if pattern.search(text):
+            return name
+    return None
+
 # Kinds that only fire with project context (file names, repo words, …):
 # without it these everyday verbs match chatter ("added sugar to coffee").
 CONTEXT_GATED_KINDS = frozenset({"project-build"})
@@ -184,6 +207,8 @@ def extract_candidates(text: str, source: str = "tool",
         sentence, secret_kinds = redact_secrets(sentence)
         if not SECRET_DROP_KINDS.isdisjoint(secret_kinds):
             continue  # pasted credential, not a durable fact
+        if fragment_reason(sentence):
+            continue  # tool payload / code dump, not durable prose
         for pattern, kind, importance, tags in RULE_PATTERNS:
             m = pattern.search(sentence)
             if not m:

@@ -96,3 +96,27 @@ durability, hostile symlinks/filesystem permissions, exhaustive malformed-input
 fuzzing, or maximum-size hook timing. Local stores are plaintext and rely on
 filesystem access controls. Validators establish package validity, not runtime
 acceptance. No installation, publishing, or shared-memory edits were performed.
+
+## Follow-up round: capture precision and file sprawl
+
+Second review round after commit `91d1a899`. Trigger: surveyed real stores held
+95–312 topic files, 72–85% machine artifacts (`{"filePath":…}` payloads, patch
+bodies, line-numbered dumps, mojibake), and no store had an `archive/`
+directory — the file cap only ran at SessionEnd, which is rarely reached.
+
+| Evidence / location | Defect and resulting fix |
+|---|---|
+| `extractor.py` `FRAGMENT_MARKERS`; `hooks/_common.py` `tool_text` | Tool input JSON and session-log text were mined as prose. Capture now reads tool outputs only (depth/length-bounded string leaves) and rejects JSON payloads, escaped text, line-numbered dumps, mojibake, and session-log paths. |
+| `hooks/post_tool_use_failure.py` fallback | Raw error notes bypassed the fragment guard. The fallback now files only prose-shaped errors. |
+| `consolidate.py` `retire_fragments`; `hooks/session_start.py`, `hooks/stop.py`, `lifecycle.py` | Nothing retired pre-existing fragments or enforced the cap outside SessionEnd. SessionStart and Stop now retire fragments and enforce `max_files_per_scope` (pinned and importance-5 topics protected); sweeps log real counts. |
+| `hooks/_common.py`, `mcp/server.py` | `sys.stdin.read()` decoded UTF-8 as cp1252 on Windows, persisting mojibake. Both now read `sys.stdin.buffer` and decode UTF-8. |
+| `store.py` `archive_topic`, `_save_meta`/`_load_meta` | Mass sweeps re-read/wrote metadata per file (2.8s for 221 files). Batched index refresh plus an mtime/size meta stamp cut that to ~1.0s; SessionStart budget raised to 15s. |
+
+Verification: `python -m unittest discover -s tests` — **183 passed** (16 new
+fragment-hygiene and UTF-8 tests). End-to-end on a copy of a real 312-file
+store: 312 → 40 topics + 269
+archived in 1.5s with recall intact over live and archived topics. Both muse
+validators re-run clean; wheel rebuilt as
+`dist/muse_memory-1.0.1-py3-none-any.whl`. The fix is forward-only: existing
+user stores self-heal at the next SessionStart; no store was modified during
+verification (all runs used isolated temp copies).

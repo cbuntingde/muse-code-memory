@@ -7,6 +7,6 @@ Standard library only.
 
 from . import config, consolidate, extractor, lifecycle, listing, paths, rag, store
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __all__ = ["config", "consolidate", "extractor", "lifecycle", "listing",
            "paths", "rag", "store"]

@@ -271,4 +271,14 @@ def stop_checkpoint(cwd: str | os.PathLike | None = None,
     limit = min(int(cfg.get("max_pending", 200)), STOP_DRAIN_MAX)
     report = file_pending(store, limit, float(cfg['dedupe_threshold']),
                           int(cfg['capture_min_importance']))
-    return {"filed": report.get("candidates", 0), "actions": report.get("actions", {})}
+    retired = 0
+    if cfg.get("auto_cleanup", True):
+        # SessionEnd may never fire (killed terminals, crashes); enforce
+        # the storage cap on every Stop so stores cannot grow unbounded.
+        for scope in store.scopes.values():
+            retired += cons.enforce_file_cap(
+                scope,
+                int(cfg.get("max_files_per_scope", 40)))["retired_for_cap"]
+    return {"filed": report.get("candidates", 0),
+            "actions": report.get("actions", {}),
+            "retired_for_cap": retired}

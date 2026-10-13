@@ -19,6 +19,24 @@ def main(event: dict) -> None:
     store = MemoryStore(cwd)
     store.ensure_all()
 
+    # Startup maintenance: retire machine artifacts and enforce the file
+    # cap before building the digest. SessionEnd may never fire, so this
+    # is the guaranteed once-per-session enforcement point.
+    fragmented = capped = 0
+    if cfg.get("auto_cleanup", True):
+        from muse_memory import consolidate as cons
+        for name in ("global", "project-personal", "project-shared"):
+            scope = store.get_scope(name)
+            if scope is None:
+                continue
+            try:
+                fragmented += cons.retire_fragments(scope)["fragments_retired"]
+                capped += cons.enforce_file_cap(
+                    scope,
+                    int(cfg.get("max_files_per_scope", 40)))["retired_for_cap"]
+            except OSError:
+                continue
+
     lines = ["Memory digest (muse-memory):"]
     counts: dict[str, int] = {}
     for name in ("global", "project-personal", "project-shared"):
@@ -49,6 +67,9 @@ def main(event: dict) -> None:
         parts = " + ".join(f"{n} {name.split('-')[-1]}"
                            for name, n in counts.items())
         status = f"muse-memory: {total_files} topics indexed ({parts})"
+    if fragmented or capped:
+        status += (f"; maintenance retired {fragmented} fragments, "
+                   f"{capped} over cap")
     text = "\n".join(lines)
     emit_context(text[:int(cfg.get("session_start_max_chars", 2500))],
                  "SessionStart", message=status)

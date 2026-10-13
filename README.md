@@ -6,18 +6,20 @@ captured automatically, recalled with built-in retrieval, and maintained without
 
 - **Three scopes** — `global` (machine-wide), `project-personal` (private per project,
   shares the native Muse directory), `project-shared` (`<repo>/.agents/memory`, committed)
-- **Automatic capture** — tool results observed, failures recorded, transcripts mined
+- **Automatic capture** — tool outputs mined for durable prose (payload dumps and
+  code fragments rejected), failures recorded, transcripts mined
 - **Built-in RAG** — BM25-hybrid retrieval (lexical + recency + importance + use signals)
   over per-scope JSON indexes; standard library only, works offline in hook context
-- **Self-maintenance** — dedupe, topic merge, expiry, stale archival, oversize trim,
-  file-cap retirement with pin protection
+- **Self-maintenance** — fragment retirement, dedupe, topic merge, expiry, stale
+  archival, oversize trim, and file-cap retirement (at session start, stop, and
+  session end; pinned topics protected)
 - **Safe by design** — pasted credentials dropped, secret values redacted before filing;
   every hook is exception-safe and exits 0, with real errors in a rotated diagnostics log
 - **Full agent surface** — 4 MCP tools, 6 slash commands, and a 20-command CLI sharing
   one implementation
 
 Status: `muse skills validate` and `muse plugins validate` both return `valid: true`
-with empty diagnostics. 167 unit/contract tests pass
+with empty diagnostics. 183 unit/contract tests pass
 (`python3 -m unittest discover -s tests`).
 
 ## Install
@@ -54,18 +56,22 @@ then `muse plugins update muse-memory`. Restart `muse` afterwards so hooks load.
 ## How it works
 
 ```
-SessionStart        -> ensure stores, rebuild stale RAG indexes, inject digest
+SessionStart        -> ensure stores, retire fragments + enforce file caps, inject digest
 UserPromptSubmit    -> RAG recall over all scopes, inject top hits as context
-PostToolUse         -> extract candidates (decisions/rules/fixes/facts), queue
+PostToolUse         -> extract candidates from tool outputs (fragments rejected), queue
 PostToolUseFailure  -> same with importance boost + redacted error fallback
 PreCompact          -> snapshot key topics so compaction cannot lose them
-Stop                -> file queued candidates (create/append/skip-if-duplicate)
+Stop                -> file queued candidates, enforce per-scope file cap
 SessionEnd          -> mine transcript tail, file everything, full maintenance
 ```
 
 Capture is heuristic and precision-biased: explicit decisions, always/never rules,
 preferences, fixes, milestones, and project changes (everyday build verbs only
-with project context). Chatter and task-local detail are ignored.
+with project context). Chatter and task-local detail are ignored, and tool
+payloads — JSON dumps, patch bodies, line-numbered dumps, escaped text, terminal
+mojibake, session-log paths — are rejected at extraction time, so raw code and
+logs never become memory files. Legacy fragments already on disk are retired to
+`archive/` automatically at the next session start.
 Pasted credentials are dropped at capture time and remaining secret values are
 redacted (`[redacted:<kind>]`) before anything is filed — including slugs derived
 for topic filenames. Bare security words without values ("token", "password")
@@ -139,7 +145,7 @@ muse_memory/               stdlib-only core: paths, store, rag, extractor, listi
 mcp/server.py              MCP stdio server (recall/save/stats/list)
 skills/memory/SKILL.md     agent instructions for using memory
 commands/                  /remember /recall /memories /forget /archive /consolidate
-tests/                     167 unittest tests incl. hook + MCP contract tests
+tests/                     183 unittest tests incl. hook + MCP contract tests
 .github/workflows/ci.yml   unittest matrix + bundle validation when muse is present
 examples/                  best-effort hooks.json / settings hooks block
 ```

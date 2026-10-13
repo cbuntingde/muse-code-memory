@@ -24,12 +24,16 @@ def ensure_imports() -> None:
 
 
 def read_event() -> dict:
-    """Read the hook event JSON from stdin (tolerates empty/tty stdin)."""
+    """Read the hook event JSON from stdin (tolerates empty/tty stdin).
+
+    Reads bytes and decodes UTF-8 explicitly: sys.stdin uses the Windows
+    locale codec (cp1252), which would mojibake any non-ASCII content.
+    """
     try:
         if sys.stdin.isatty():
             return {}
-        raw = sys.stdin.read()
-    except (OSError, ValueError):
+        raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+    except (OSError, ValueError, AttributeError):
         return {}
     if not raw.strip():
         return {}
@@ -78,19 +82,40 @@ def emit_message(text: str) -> None:
         emit({"systemMessage": text})
 
 
+def _collect_strings(node: object, out: list[str], depth: int = 0) -> None:
+    """Collect prose-like string leaves from a tool payload (bounded)."""
+    if depth > 6 or len(out) >= 60:
+        return
+    if isinstance(node, str):
+        s = node.strip()
+        if 30 < len(s) < 4000 and " " in s:
+            out.append(s)
+    elif isinstance(node, dict):
+        for value in node.values():
+            _collect_strings(value, out, depth + 1)
+    elif isinstance(node, list):
+        for item in node[:20]:
+            _collect_strings(item, out, depth + 1)
+
+
 def tool_text(event: dict) -> tuple[str, str]:
-    """Return (tool_name, combined tool input/output text) for PostToolUse events."""
+    """Return (tool_name, combined tool output text) for PostToolUse events.
+
+    Only outputs are mined: tool_input is the agent's own edit/command
+    payload (code and JSON), not durable prose, and mining it filed code
+    fragments as memories. Structured outputs contribute their prose-like
+    string leaves instead of serialized JSON.
+    """
     name = str(event.get("tool_name", ""))
     parts: list[str] = []
-    for key in ("tool_input", "tool_response", "tool_result", "result", "output"):
+    for key in ("tool_response", "tool_result", "result", "output"):
         val = event.get(key)
         if isinstance(val, str) and val.strip():
             parts.append(val)
-        elif isinstance(val, dict):
-            try:
-                parts.append(json.dumps(val))
-            except (TypeError, ValueError):
-                pass
+        elif isinstance(val, (dict, list)):
+            leaves: list[str] = []
+            _collect_strings(val, leaves)
+            parts.extend(leaves)
     return name, "\n".join(parts)
 
 

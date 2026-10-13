@@ -1,6 +1,7 @@
 """Automated cleanup, merging, and consolidation.
 
 Jobs (all idempotent, safe to run on every SessionEnd):
+- retire_fragments: archive machine artifacts (payload JSON, code dumps)
 - dedupe:      drop near-duplicate bullets across topic files (SequenceMatcher)
 - merge:       fold highly similar topics into one file
 - expire:      delete expired records; archive stale low-value ones
@@ -18,7 +19,7 @@ from functools import wraps
 
 from . import paths
 from .locking import scope_lock
-from .extractor import candidate_to_bullet, redact_secrets
+from .extractor import candidate_to_bullet, fragment_reason, redact_secrets
 from .store import (MemoryRecord, MemoryStore, ScopeStore, frontmatter_block,
                    slugify_topic, summary_of)
 
@@ -283,6 +284,29 @@ def trim_scope(store: ScopeStore, max_chars: int = 12000) -> dict:
 
 
 @_locked_job
+def retire_fragments(store: ScopeStore) -> dict:
+    """Archive auto-captured machine artifacts (payload JSON, code dumps).
+
+    Old captures and any payload that slipped past the extractor guard
+    can hold raw tool JSON, line-numbered code, escaped strings, or
+    mojibake. Retire those topics (recoverable in archive/, still
+    searchable with archive recall). Manual saves and pinned topics are
+    kept; a human put those there on purpose.
+    """
+    retired = 0
+    for rec in store.read_all():
+        if rec.pinned or rec.source == "manual":
+            continue
+        if fragment_reason(rec.content) is None:
+            continue
+        if store.archive_topic(rec.file, refresh=False):
+            retired += 1
+    if retired:
+        store.refresh_index()
+    return {"scope": store.scope, "fragments_retired": retired}
+
+
+@_locked_job
 def enforce_file_cap(store: ScopeStore, max_files: int = 40) -> dict:
     records = sorted(store.read_all(),
                      key=lambda r: (r.importance, r.access_count, r.updated or 0.0))
@@ -293,9 +317,11 @@ def enforce_file_cap(store: ScopeStore, max_files: int = 40) -> dict:
             break
         if rec.importance >= 5 or rec.pinned:
             continue  # standing rules and pins are never auto-retired
-        store.archive_topic(rec.file)
-        overflow -= 1
-        retired += 1
+        if store.archive_topic(rec.file, refresh=False):
+            overflow -= 1
+            retired += 1
+    if retired:
+        store.refresh_index()
     return {"scope": store.scope, "retired_for_cap": retired}
 
 
@@ -401,6 +427,7 @@ def cleanup(store: MemoryStore, cfg: dict | None = None) -> dict:
     budget = SimilarityBudget()
     report: dict[str, dict] = {}
     for scope in store.scopes.values():
+        fragments_rep = retire_fragments(scope)
         dedupe_rep = dedupe_scope(scope, float(cfg.get("dedupe_threshold", 0.85)),
                                   budget=budget)
         merge_rep = merge_scope(scope, float(cfg.get("merge_threshold", 0.72)),
@@ -408,6 +435,7 @@ def cleanup(store: MemoryStore, cfg: dict | None = None) -> dict:
         capped = bool(dedupe_rep.pop("comparisons_capped", False)
                       or merge_rep.pop("comparisons_capped", False))
         report[scope.scope] = {
+            **fragments_rep,
             **dedupe_rep,
             **merge_rep,
             **expire_scope(scope, int(cfg.get("stale_days", 90))),

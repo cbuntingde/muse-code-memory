@@ -193,6 +193,7 @@ class ScopeStore:
         self.meta_path = directory / paths.META_FILE
         self._meta: dict[str, dict] = {}
         self._meta_loaded = False
+        self._meta_stamp: tuple[int, int] | None = None
         self._dirty_updates: set[str] = set()
         self._dirty_deletes: set[str] = set()
 
@@ -214,22 +215,45 @@ class ScopeStore:
             return self._meta
         self._meta_loaded = True
         try:
+            st = self.meta_path.stat()
+            if self._meta_stamp is not None and self._meta_stamp == (
+                    st.st_mtime_ns, st.st_size):
+                return self._meta  # disk unchanged since our last save
+        except OSError:
+            self._meta = {}
+            self._meta_stamp = None
+            return self._meta
+        try:
             data = json.loads(self.meta_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 self._meta = {k: v for k, v in data.items() if isinstance(v, dict)}
         except (OSError, ValueError):
             self._meta = {}
+            self._meta_stamp = None
         return self._meta
 
     def _save_meta(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         tmp = self.meta_path.with_suffix(".tmp")
-        try:
-            disk = json.loads(self.meta_path.read_text(encoding="utf-8"))
-            if not isinstance(disk, dict):
+        disk: dict | None = None
+        # Batch writers (sweep, cap) hold the scope lock and save once per
+        # file; skip the re-read when our last write is still the disk
+        # state. The stamp check keeps multi-process merge semantics: any
+        # external write changes mtime/size and forces a fresh read.
+        if self._meta_stamp is not None:
+            try:
+                st = self.meta_path.stat()
+                if self._meta_stamp == (st.st_mtime_ns, st.st_size):
+                    disk = dict(self._meta)
+            except OSError:
+                pass
+        if disk is None:
+            try:
+                disk = json.loads(self.meta_path.read_text(encoding="utf-8"))
+                if not isinstance(disk, dict):
+                    disk = {}
+            except (OSError, ValueError):
                 disk = {}
-        except (OSError, ValueError):
-            disk = {}
         for filename in self._dirty_deletes:
             disk.pop(filename, None)
         for filename in self._dirty_updates:
@@ -241,6 +265,11 @@ class ScopeStore:
         self._dirty_deletes.clear()
         self._meta = {k: v for k, v in disk.items() if isinstance(v, dict)}
         self._meta_loaded = True
+        try:
+            st = self.meta_path.stat()
+            self._meta_stamp = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            self._meta_stamp = None
 
     def file_meta(self, filename: str) -> dict:
         return self._load_meta().get(filename, {})
@@ -380,7 +409,7 @@ class ScopeStore:
         return True
 
     @_serialized
-    def archive_topic(self, filename: str) -> bool:
+    def archive_topic(self, filename: str, refresh: bool = True) -> bool:
         src = self.dir / filename
         if not src.is_file():
             return False
@@ -399,7 +428,8 @@ class ScopeStore:
         self._load_meta().pop(filename, None)
         self._dirty_deletes.add(filename)
         self._save_meta()
-        self.refresh_index()
+        if refresh:
+            self.refresh_index()
         self._invalidate_index()
         return True
 

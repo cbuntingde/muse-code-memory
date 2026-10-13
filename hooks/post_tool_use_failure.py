@@ -34,12 +34,13 @@ def main(event: dict) -> None:
     if not candidates:
         # Fall back to a compact raw error note so failures are not lost.
         first = " ".join(text.split())[:300]
-        first, _ = extractor.redact_secrets(first)
-        candidates = [{"text": first, "kind": "gotcha",
-                       "topic": extractor.suggest_topic(first, "gotcha"),
-                       "importance": 3, "tags": ["gotcha"],
-                       "scope": cfg['default_scope'], "source": "tool-failure",
-                       "session_id": str(event.get("session_id", ""))}]
+        if extractor.fragment_reason(first) is None:
+            first, _ = extractor.redact_secrets(first)
+            candidates = [{"text": first, "kind": "gotcha",
+                           "topic": extractor.suggest_topic(first, "gotcha"),
+                           "importance": 3, "tags": ["gotcha"],
+                           "scope": cfg['default_scope'], "source": "tool-failure",
+                           "session_id": str(event.get("session_id", ""))}]
     lifecycle.queue_candidates(candidates, MemoryStore(cwd),
                                int(cfg.get("max_pending", 200)))
 

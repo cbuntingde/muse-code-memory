@@ -27,7 +27,7 @@ Hooks capture obvious decisions and fixes automatically, but save explicitly whe
 
 ## Maintenance is automatic
 
-SessionEnd runs dedupe, merge, expiry, trimming, and cap enforcement. Do not hand-edit `.rag-index.json`, `.memory-meta.json`, `.pending.jsonl`, or `.snapshot-*` files. Edit topic Markdown files directly when the user asks to correct a memory, then let the next hook pass rebuild the index.
+Maintenance is automatic: SessionStart and Stop retire fragment artifacts and enforce the file cap; SessionEnd adds dedupe, merge, expiry, and trimming. Do not hand-edit `.rag-index.json`, `.memory-meta.json`, `.pending.jsonl`, or `.snapshot-*` files. Edit topic Markdown files directly when the user asks to correct a memory, then let the next hook pass rebuild the index.
 
 ## Commands
 
