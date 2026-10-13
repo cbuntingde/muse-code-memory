@@ -472,6 +472,10 @@ class MemoryStore:
                 self.scopes[name] = ScopeStore(name, d)
 
     def ensure_all(self) -> None:
+        # One-time move of the pre-1.1 tree (<data>/memory/) into the
+        # config-based memories dir; no-op afterwards. Runs here so every
+        # hook and CLI command sees the migrated layout.
+        paths.migrate_legacy_base()
         titles = {"global": "Global Memory",
                   "project-personal": f"Project Memory ({self.cwd.name})",
                   "project-shared": f"Shared Project Memory ({self.cwd.name})"}

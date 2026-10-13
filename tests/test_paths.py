@@ -57,6 +57,42 @@ class PathsTest(IsolatedCase):
         self.assertTrue(paths.muse_data_dir().is_absolute())
         self.assertTrue(paths.muse_config_dir().is_absolute())
 
+    def test_memories_base_under_config_home(self) -> None:
+        self.assertEqual(paths.memories_base_dir(),
+                         self.config_home / "muse" / "memories")
+
+    def test_scopes_and_diagnostics_under_memories_base(self) -> None:
+        base = self.config_home / "muse" / "memories"
+        self.assertEqual(paths.global_memory_dir(), base / "global")
+        self.assertEqual(paths.projects_root(), base / "projects")
+        self.assertEqual(paths.diagnostics_log(), base / "diagnostics.log")
+
+    def test_migrate_absent_when_no_legacy_tree(self) -> None:
+        self.assertEqual(paths.migrate_legacy_base(), "absent")
+        self.assertFalse(paths.memories_base_dir().exists())
+
+    def test_migrate_moves_legacy_tree(self) -> None:
+        legacy = self.data_home / "muse" / "memory"
+        (legacy / "projects" / "slug").mkdir(parents=True)
+        (legacy / "projects" / "slug" / "note.md").write_text("# Note\n")
+        (legacy / "global").mkdir()
+        self.assertEqual(paths.migrate_legacy_base(), "moved")
+        base = paths.memories_base_dir()
+        self.assertTrue((base / "projects" / "slug" / "note.md").is_file())
+        self.assertTrue((base / "global").is_dir())
+        self.assertFalse(legacy.exists())
+
+    def test_migrate_never_overwrites_destination(self) -> None:
+        legacy = self.data_home / "muse" / "memory"
+        (legacy / "global").mkdir(parents=True)
+        (legacy / "global" / "keep.md").write_text("legacy")
+        dest_global = paths.memories_base_dir() / "global"
+        dest_global.mkdir(parents=True)
+        (dest_global / "keep.md").write_text("current")
+        self.assertEqual(paths.migrate_legacy_base(), "merged")
+        self.assertEqual((dest_global / "keep.md").read_text(), "current")
+        self.assertTrue((legacy / "global" / "keep.md").is_file())
+
     def test_shared_dir_none_outside_repo(self) -> None:
         self.assertIsNone(paths.shared_project_dir(self.work))
 

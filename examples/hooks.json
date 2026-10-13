@@ -1,11 +1,11 @@
 {
-  "$comment": "BEST-EFFORT example. Muse docs do not publish the project hooks.json schema; this follows the Claude-compatible wire contract that Muse's own hook runner accepts (snake_case stdin payload, hookSpecificOutput stdout, exit 2 + stderr to block). Prefer installing the plugin instead: muse plugins install C:/ai-development/muse-code-memory --scope user",
+  "$comment": "BEST-EFFORT example. Muse docs do not publish the project hooks.json schema; this follows the Claude-compatible wire contract that Muse's own hook runner accepts (snake_case stdin payload, hookSpecificOutput stdout, exit 2 + stderr to block). Prefer installing the plugin instead: muse plugins install <plugin-dir> --scope user",
   "hooks": {
     "SessionStart": [
       {
         "matcher": "*",
         "hooks": [
-          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/session_start.py"}
+          {"type": "command", "command": "python <plugin-dir>/hooks/session_start.py"}
         ]
       }
     ],
@@ -13,7 +13,7 @@
       {
         "matcher": "*",
         "hooks": [
-          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/user_prompt_submit.py"}
+          {"type": "command", "command": "python <plugin-dir>/hooks/user_prompt_submit.py"}
         ]
       }
     ],
@@ -21,7 +21,7 @@
       {
         "matcher": "*",
         "hooks": [
-          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/post_tool_use.py"}
+          {"type": "command", "command": "python <plugin-dir>/hooks/post_tool_use.py"}
         ]
       }
     ],
@@ -29,7 +29,7 @@
       {
         "matcher": "*",
         "hooks": [
-          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/post_tool_use_failure.py"}
+          {"type": "command", "command": "python <plugin-dir>/hooks/post_tool_use_failure.py"}
         ]
       }
     ],
@@ -37,7 +37,7 @@
       {
         "matcher": "*",
         "hooks": [
-          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/pre_compact.py"}
+          {"type": "command", "command": "python <plugin-dir>/hooks/pre_compact.py"}
         ]
       }
     ],
@@ -45,7 +45,7 @@
       {
         "matcher": "*",
         "hooks": [
-          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/stop.py"}
+          {"type": "command", "command": "python <plugin-dir>/hooks/stop.py"}
         ]
       }
     ],
@@ -53,7 +53,7 @@
       {
         "matcher": "*",
         "hooks": [
-          {"type": "command", "command": "python C:/ai-development/muse-code-memory/hooks/session_end.py"}
+          {"type": "command", "command": "python <plugin-dir>/hooks/session_end.py"}
         ]
       }
     ]

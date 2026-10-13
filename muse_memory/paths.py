@@ -1,14 +1,17 @@
 """Path resolution for Muse Code memory scopes.
 
-Native locations (verified against Muse Code 1.4.3 on this machine):
+Layout (identical on Windows, macOS, and Linux):
 - config: $XDG_CONFIG_HOME/muse else ~/.config/muse  (settings.json, ...)
-- data:   $XDG_DATA_HOME/muse   else ~/.local/share/muse
-- native personal-project memory: <data>/memory/projects/<slug>/MEMORY.md
-- shared project memory:          <repo>/.agents/memory/MEMORY.md
+- memories base: <config>/memories/
+- personal-project memory: <base>/projects/<slug>/MEMORY.md
+- global (personal, machine-wide): <base>/global/MEMORY.md
+- shared project memory: <repo>/.agents/memory/MEMORY.md (committed)
+- diagnostics log: <base>/diagnostics.log (rotated)
 
-This module adds two directories alongside the native ones:
-- global (personal, machine-wide): <data>/memory/global/MEMORY.md
-- RAG/meta sidecars inside each scope dir (dotfiles, ignored by the agent index)
+RAG/meta sidecars live inside each scope dir as dotfiles, ignored by the
+agent index. The pre-1.1 base (<data>/memory/, where data is
+$XDG_DATA_HOME/muse else ~/.local/share/muse) is migrated automatically
+by migrate_legacy_base() on first use.
 """
 
 from __future__ import annotations
@@ -115,12 +118,62 @@ def muse_data_dir() -> Path:
     return home_dir() / ".local" / "share" / "muse"
 
 
+def memories_base_dir() -> Path:
+    """Base dir for plugin-managed memory: <config>/memories/.
+
+    Same location on every OS (only the config root itself is platform
+    specific), so installs behave identically on Windows, macOS, and Linux.
+    """
+    return muse_config_dir() / "memories"
+
+
+def legacy_memory_base() -> Path:
+    """Pre-1.1 base (<data>/memory/); source for one-time migration only."""
+    return muse_data_dir() / "memory"
+
+
+def migrate_legacy_base() -> str:
+    """Move the pre-1.1 tree into memories_base_dir(); never raises.
+
+    Merge-moves each legacy child whose name is absent at the destination,
+    so nothing is ever overwritten; removes the legacy base when empty.
+    Returns "moved", "merged" (partial, name collisions left behind),
+    "absent" (nothing to do), or "skipped" (unexpected failure).
+    Safe to call on every startup: it is a no-op once migrated.
+    """
+    try:
+        dest = memories_base_dir()
+        src = legacy_memory_base()
+        if not src.is_dir():
+            return "absent"
+        dest.mkdir(parents=True, exist_ok=True)
+        import shutil
+        leftovers = 0
+        for child in sorted(src.iterdir()):
+            target = dest / child.name
+            if target.exists():
+                leftovers += 1
+                continue
+            try:
+                shutil.move(str(child), str(target))
+            except OSError:
+                leftovers += 1
+        try:
+            if not any(src.iterdir()):
+                src.rmdir()
+        except OSError:
+            pass
+        return "merged" if leftovers else "moved"
+    except Exception:  # noqa: BLE001 - migration must never break hooks
+        return "skipped"
+
+
 def global_memory_dir() -> Path:
-    return muse_data_dir() / "memory" / "global"
+    return memories_base_dir() / "global"
 
 
 def projects_root() -> Path:
-    return muse_data_dir() / "memory" / "projects"
+    return memories_base_dir() / "projects"
 
 
 def canonical_cwd(cwd: str | os.PathLike | None = None) -> Path:
@@ -193,8 +246,8 @@ def all_scope_dirs(cwd: str | os.PathLike | None = None) -> dict[str, Path | Non
 
 
 def diagnostics_log() -> Path:
-    """Hook diagnostics log: <data>/memory/diagnostics.log (rotated)."""
-    return muse_data_dir() / "memory" / "diagnostics.log"
+    """Hook diagnostics log: <base>/diagnostics.log (rotated)."""
+    return memories_base_dir() / "diagnostics.log"
 
 
 def user_config_file() -> Path:
