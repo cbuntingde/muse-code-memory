@@ -19,7 +19,8 @@ from functools import wraps
 
 from . import paths
 from .locking import scope_lock
-from .extractor import candidate_to_bullet, fragment_reason, redact_secrets
+from .extractor import (blocked_for_shared, candidate_to_bullet,
+                        fragment_reason, redact_secrets)
 from .store import (MemoryRecord, MemoryStore, ScopeStore, frontmatter_block,
                    slugify_topic, summary_of)
 
@@ -340,6 +341,11 @@ def file_candidate(cand: dict, store: MemoryStore,
     scope = store.get_scope(cand.get("scope", "project-personal"))
     if scope is None:
         scope = store.get_scope("project-personal") or next(iter(store.scopes.values()))
+    if scope.scope == "project-shared":
+        blocked = blocked_for_shared(str(cand.get("text", "")))
+        if blocked:
+            return {"action": "blocked-secret", "file": "",
+                    "scope": scope.scope, "blocked": blocked}
     # Defense in depth: scrub anything a caller filed without redacting,
     # so secrets can never reach topic files (or slug-derived filenames).
     clean_text, _ = redact_secrets(cand.get("text", ""))
@@ -416,7 +422,8 @@ def consolidate_session(candidates: list[dict], store: MemoryStore,
             errors.append(str(exc))
             continue
         actions[result["action"]] = actions.get(result["action"], 0) + 1
-        files.append(f"{result['scope']}/{result['file']}")
+        if result.get("file"):
+            files.append(f"{result['scope']}/{result['file']}")
     return {"actions": actions, "files": files, "candidates": len(files),
             "errors": errors}
 
@@ -445,8 +452,5 @@ def cleanup(store: MemoryStore, cfg: dict | None = None) -> dict:
         }
     # Drop the cached RAG indexes so the next recall rebuilds from cleaned files.
     for scope in store.scopes.values():
-        try:
-            (scope.dir / paths.RAG_INDEX).unlink(missing_ok=True)
-        except OSError:
-            pass
+        scope._invalidate_index()
     return report

@@ -27,7 +27,7 @@ class LifecycleTest(IsolatedCase):
     def test_stop_checkpoint_bounds_one_run(self) -> None:
         store = MemoryStore(self.work)
         cands = [{"text": f"Durable project fact number {i} for drain cap.",
-                  "kind": "fact", "topic": f"drain-cap-{i}", "importance": 2,
+                  "kind": "fact", "topic": f"drain-cap-{i}", "importance": 4,
                   "tags": [], "scope": "project-personal", "source": "tool",
                   "session_id": ""} for i in range(80)]
         lifecycle.queue_candidates(cands, store)

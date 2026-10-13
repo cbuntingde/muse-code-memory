@@ -22,7 +22,10 @@ import re
 from pathlib import Path
 
 MEMORY_INDEX = "MEMORY.md"
-RAG_INDEX = ".rag-index.json"
+RAG_INDEX = ".rag-index.db"
+LEGACY_RAG_INDEX = ".rag-index.json"
+ACCESS_FILE = ".access.jsonl"
+TRASH_DIR = ".trash"
 META_FILE = ".memory-meta.json"
 PENDING_FILE = ".pending.jsonl"
 SNAPSHOT_PREFIX = ".snapshot-"

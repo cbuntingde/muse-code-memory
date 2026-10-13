@@ -99,7 +99,7 @@ class ForgetArchiveTest(IsolatedCase):
         code, out = _run(cmd_forget, cwd=str(self.work), scopes=None,
                          file="trivia-note.md", scope="project-personal")
         self.assertEqual(code, 0)
-        self.assertIn("deleted", out)
+        self.assertIn("trashed", out)
         scope = store.get_scope("project-personal")
         assert scope is not None
         self.assertFalse((scope.dir / "trivia-note.md").exists())

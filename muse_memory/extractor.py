@@ -154,6 +154,26 @@ def redact_secrets(text: str) -> tuple[str, list[str]]:
     return cleaned, sorted(kinds)
 
 
+_HIGH_ENTROPY_RE = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{32,}(?![A-Za-z0-9+/=_-])")
+
+
+def blocked_for_shared(text: str) -> list[str]:
+    """Reasons a text must not be filed to the committed shared scope.
+
+    Fail-closed counterpart to redact_secrets: any credential kind that
+    redaction would rewrite, plus opaque high-entropy tokens (mixed
+    letters/digits, 32+ chars), blocks shared filing entirely instead of
+    being silently rewritten into a file that will be committed.
+    """
+    _, kinds = redact_secrets(text)
+    reasons = list(kinds)
+    for token in _HIGH_ENTROPY_RE.findall(text or ""):
+        if any(c.isdigit() for c in token) and any(c.isalpha() for c in token):
+            reasons.append("high-entropy-token")
+            break
+    return sorted(set(reasons))
+
+
 def _clean(text: str) -> str:
     text = CODE_FENCE_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip()

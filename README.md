@@ -7,20 +7,29 @@ captured automatically, recalled with built-in retrieval, and maintained without
 - **Three scopes** — `global` (machine-wide), `project-personal` (private per project,
   shares the native Muse directory), `project-shared` (`<repo>/.agents/memory`, committed)
 - **Automatic capture** — tool outputs mined for durable prose (payload dumps and
-  code fragments rejected), failures recorded, transcripts mined
-- **Built-in RAG** — BM25-hybrid retrieval (lexical + recency + importance + use signals)
-  over per-scope JSON indexes; standard library only, works offline in hook context
+  code fragments rejected), failures recorded, transcripts mined. Captures queue as
+  proposals: rules, decisions, and importance-4+ facts file at Stop/SessionEnd, the
+  rest are held for `/approve` and expire after 7 days (`proposal_ttl_days`)
+- **Built-in RAG** — SQLite FTS5 BM25 retrieval (stdlib `sqlite3`, lexical + recency +
+  importance + use signals) over a disposable per-scope `.rag-index.db`, rebuilt from
+  the Markdown topics whenever they change; works offline in hook context, with an
+  in-memory BM25 fallback when FTS5 is unavailable
 - **Self-maintenance** — fragment retirement, dedupe, topic merge, expiry, stale
-  archival, oversize trim, and file-cap retirement (at session start, stop, and
-  session end; pinned topics protected)
+  archival, oversize trim, and file-cap retirement (at stop and session end;
+  SessionStart and prompt recall are read-only; pinned topics protected)
 - **Safe by design** — pasted credentials dropped, secret values redacted before filing;
   every hook is exception-safe and exits 0, with real errors in a rotated diagnostics log
-- **Full agent surface** — 4 MCP tools, 6 slash commands, and a 20-command CLI sharing
-  one implementation
+- **Full agent surface** — 4 MCP tools, 8 slash commands, and a 23-command CLI sharing
+  one implementation (`muse_memory/service.py`)
 
-Status: `muse skills validate` and `muse plugins validate` both return `valid: true`
-with empty diagnostics. 183 unit/contract tests pass
-(`python3 -m unittest discover -s tests`).
+Status: version 1.1.0. `muse skills validate` and `muse plugins validate` both return
+`valid: true` with empty diagnostics, and 197 unit/contract tests pass
+(`python3 -m unittest discover -s tests`). The installed plugin was verified live on
+Muse 1.4.7: marketplace update, upgrade, a headless-session `memory_save` /
+`memory_recall` round-trip, a second session recalling the first session's save, and
+uninstall + reinstall (see AUDIT.md). The golden evaluation (`python3 -m muse_memory
+eval`) reports recall@1, recall@3, capture precision, and capture recall at 1.0 on its
+frozen corpus.
 
 ## Install
 
@@ -56,13 +65,13 @@ then `muse plugins update muse-memory`. Restart `muse` afterwards so hooks load.
 ## How it works
 
 ```
-SessionStart        -> ensure stores, retire fragments + enforce file caps, inject digest
-UserPromptSubmit    -> RAG recall over all scopes, inject top hits as context
+SessionStart        -> ensure stores, inject digest (read-only: no sweeps, no index writes)
+UserPromptSubmit    -> RAG recall over all scopes, inject top hits; use signals queued
 PostToolUse         -> extract candidates from tool outputs (fragments rejected), queue
 PostToolUseFailure  -> same with importance boost + redacted error fallback
 PreCompact          -> snapshot key topics so compaction cannot lose them
-Stop                -> file queued candidates, enforce per-scope file cap
-SessionEnd          -> mine transcript tail, file everything, full maintenance
+Stop                -> apply use signals, file high-confidence proposals, enforce file cap
+SessionEnd          -> mine transcript tail, file proposals, full maintenance
 ```
 
 Capture is heuristic and precision-biased: explicit decisions, always/never rules,
@@ -71,16 +80,17 @@ with project context). Chatter and task-local detail are ignored, and tool
 payloads — JSON dumps, patch bodies, line-numbered dumps, escaped text, terminal
 mojibake, session-log paths — are rejected at extraction time, so raw code and
 logs never become memory files. Legacy fragments already on disk are retired to
-`archive/` automatically at the next session start.
+`archive/` automatically at the next session end (SessionStart is read-only).
 Pasted credentials are dropped at capture time and remaining secret values are
 redacted (`[redacted:<kind>]`) before anything is filed — including slugs derived
 for topic filenames. Bare security words without values ("token", "password")
-are left alone.
+are left alone. The committed `project-shared` scope is fail-closed: credential-like
+or high-entropy content is refused outright there instead of being redacted and filed.
 
 Storage per scope: human-readable topic Markdown files (each with documentary
 frontmatter) + a grouped `MEMORY.md` index with section headers and live footer
-counts, plus dotfile sidecars (`.memory-meta.json`, `.rag-index.json`,
-`.pending.jsonl`, `.snapshot-*`, `archive/`). The project-personal scope adopts
+counts, plus dotfile sidecars (`.memory-meta.json`, `.rag-index.db`,
+`.pending.jsonl`, `.access.jsonl`, `.snapshot-*`, `archive/`, `.trash/`). The project-personal scope adopts
 Muse's native slug directory when one already exists, so both systems share
 files instead of forking. Machine truth lives in the sidecars; topic bodies
 roundtrip byte-identically.
@@ -94,16 +104,18 @@ Slash commands:
 | `/remember`  | Save a durable memory now                                  |
 | `/recall`    | Search memory with RAG                                     |
 | `/memories`  | List stored memories in a grouped, filterable table        |
-| `/forget`    | Permanently delete a memory topic                          |
+| `/forget`    | Trash a memory topic (restorable; `--purge` deletes)       |
 | `/archive`   | Retire a topic (still searchable with archive recall)      |
 | `/consolidate` | File pending captures and run maintenance now            |
+| `/approve`   | File all held capture proposals now                        |
+| `/restore`   | Restore a trashed topic (undoes `/forget`)                 |
 
 MCP tools (`memory` server over stdio):
 
 | Tool           | Purpose                                                        |
 |----------------|----------------------------------------------------------------|
 | `memory_recall`| RAG recall (`query`, `top_k`, `include_archive`)               |
-| `memory_save`  | Save one durable statement (auto-redacts secrets)              |
+| `memory_save`  | Save one durable statement (auto-redacts; `supersedes` archives a replaced topic) |
 | `memory_list`  | Enumerate topics as a Markdown table (filters + `limit`)       |
 | `memory_stats` | Per-scope files, importance histogram, queue, archive, index   |
 
@@ -122,9 +134,14 @@ python3 -m muse_memory doctor | pending | config   # health, queue, effective co
 python3 -m muse_memory forget|archive|pin|unpin <scope/file>
 python3 -m muse_memory export --output bundle.md  # import restores (metadata included)
 python3 -m muse_memory consolidate | cleanup | stats | reindex | paths
+python3 -m muse_memory approve                 # file all held capture proposals
+python3 -m muse_memory restore <scope/file>    # undo a forget (trash -> live)
+python3 -m muse_memory eval                    # golden recall/capture evaluation
 ```
 
-`forget` deletes permanently; `archive` retires to `archive/` (excluded from
+`save --supersedes <file>` archives the topic a new memory replaces and links both
+records. `forget` trashes a topic (restore with `restore`; `--purge` deletes permanently);
+`archive` retires to `archive/` (excluded from
 recall unless requested); `pin` reserves index slots under the 48-file cap and
 exempts topics from auto-retirement. `import` restores a bundle byte-identically
 including importance/tags, and refuses to overwrite existing files without
@@ -132,20 +149,27 @@ including importance/tags, and refuses to overwrite existing files without
 
 Config (all optional, invalid values fall back to defaults):
 `~/.config/muse/memory/config.json` (user) or `<repo>/.muse/memory.json`
-(project). See `config/memory.json` for every key with defaults.
+(project). See `config/memory.json` for the core keys with defaults; advanced
+thresholds (`dedupe_threshold`, `merge_threshold`, `stale_days`, `scopes`, and
+capture-size limits) remain accepted but undocumented. Recorded design decisions
+(embeddings and session-end model summarisation parked under the stdlib-only
+offline constraint; explicit supersede instead of contradiction detection) are
+in `dev/IMPROVEMENTS.md`.
 
 ## Layout
 
 ```
-.muse-plugin/plugin.json   native manifest (7 hooks, 1 skill, 6 commands, 1 MCP server)
+.muse-plugin/plugin.json   native manifest (7 hooks, 1 skill, 8 commands, 1 MCP server)
 .agents/plugins/marketplace.json  marketplace catalog for Git-based install
 hooks/                     one script per lifecycle event + _common.py (import-only)
-muse_memory/               stdlib-only core: paths, store, rag, extractor, listing,
-                           consolidate, lifecycle, config, cli
+muse_memory/               stdlib-only core: paths, store, rag (SQLite FTS5), extractor,
+                           listing, consolidate, lifecycle, config, service, evalset, cli
 mcp/server.py              MCP stdio server (recall/save/stats/list)
 skills/memory/SKILL.md     agent instructions for using memory
 commands/                  /remember /recall /memories /forget /archive /consolidate
-tests/                     183 unittest tests incl. hook + MCP contract tests
+                           /approve /restore
+tests/                     197 unittest tests incl. hook + MCP contract tests and the
+                           golden recall/capture eval (tests/test_eval_golden.py)
 .github/workflows/ci.yml   unittest matrix + bundle validation when muse is present
 examples/                  best-effort hooks.json / settings hooks block
 ```

@@ -32,28 +32,18 @@ def cmd_init(args) -> int:
 
 def cmd_recall(args) -> int:
     from muse_memory import dates
+    from muse_memory.service import MemoryService
 
     cfg = config_mod.load(args.cwd)
     store = _store(args)
+    svc = MemoryService(args.cwd, scopes=args.scopes)
     top_k = args.top_k or int(cfg["recall_top_k"])
-    cleaned, auto = dates.split_query(args.query)
-    since, until = auto if auto else (None, None)
-    for key, is_start in (("since", True), ("until", False)):
-        if getattr(args, key, None):
-            parsed = dates.parse_day(str(getattr(args, key)))
-            if parsed is None:
-                print(json.dumps(
-                    {"error": f"--{key} must be YYYY-MM-DD, "
-                              f"got {getattr(args, key)!r}"}))
-                return 1
-            if is_start:
-                since = parsed[0]
-            else:
-                until = parsed[1]
-    if since is not None and until is not None and since > until:
-        print(json.dumps(
-            {"error": f"empty date range ({dates.label(since, until)}): "
-                      f"--since is after --until"}))
+    try:
+        cleaned, since, until = svc.parse_range(
+            args.query, getattr(args, "since", None),
+            getattr(args, "until", None))
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}))
         return 1
     if getattr(args, "explain", False):
         rows = rag.explain_all(list(store.scopes.values()), cleaned,
@@ -76,6 +66,7 @@ def cmd_recall(args) -> int:
                           include_archive=bool(
                               getattr(args, "include_archive", False)),
                           since=since, until=until)
+
     if args.json:
         print(json.dumps([h.__dict__ for h in hits], indent=2))
     else:
@@ -98,6 +89,7 @@ def cmd_save(args) -> int:
     text = args.text
     if args.stdin:
         text += "\n" + sys.stdin.read()
+    raw_text = text
     text, secret_kinds = extractor.redact_secrets(text)
     scope_name = args.scope or config_mod.load(args.cwd)["default_scope"]
     if args.auto:
@@ -116,6 +108,26 @@ def cmd_save(args) -> int:
     if scope is None:
         print(json.dumps({"error": f"unavailable scope: {scope_name}"}))
         return 1
+    if scope_name == "project-shared":
+        blocked = extractor.blocked_for_shared(raw_text)
+        if blocked:
+            print(json.dumps({"error": "refused for project-shared scope: "
+                              f"credential-like content ({', '.join(blocked)})"}))
+            return 1
+    supersedes = getattr(args, "supersedes", None)
+    if supersedes:
+        from muse_memory.service import MemoryService
+        result = MemoryService(args.cwd, scopes=args.scopes).save(
+            text, topic=args.topic, scope=scope_name,
+            importance=args.importance, tags=args.tag or [],
+            supersedes=supersedes)
+        if result.get("action") == "blocked-secret":
+            print(json.dumps({"error": "refused for project-shared scope"}))
+            return 1
+        print(json.dumps({"file": f"{result['scope']}/{result['file']}",
+                          "redacted": secret_kinds,
+                          "superseded": result.get("superseded")}, indent=2))
+        return 0
     record = scope.write_topic(args.topic or extractor.suggest_topic(text, "note"),
                                f"# {(args.topic or 'Note').replace('-', ' ').title()}\n\n"
                                f"- {text.strip()}\n",
@@ -159,8 +171,11 @@ def cmd_consolidate(args) -> int:
         cands = extractor.extract_candidates(args.text, source="manual",
                                              max_candidates=20)
     else:
-        report = lifecycle.file_pending(store, int(cfg['max_pending']),
-                                         float(cfg['dedupe_threshold']))
+        report = lifecycle.file_pending(
+            store, int(cfg['max_pending']), float(cfg['dedupe_threshold']),
+            approve_all=bool(getattr(args, "approve_all", False)),
+            auto_file_importance=int(cfg['capture_auto_file_importance']),
+            proposal_ttl_days=int(cfg['proposal_ttl_days']))
         print(json.dumps(report, indent=2))
         return 0
     report = cons.consolidate_session(cands, store, float(cfg['dedupe_threshold']))
@@ -332,12 +347,55 @@ def cmd_forget(args) -> int:
         print(json.dumps({"error": error}))
         return 1
     assert scope is not None
-    if not scope.delete_topic(filename):
-        print(json.dumps({"error": "topic could not be deleted"}))
+    if getattr(args, "purge", False):
+        if not scope.delete_topic(filename):
+            print(json.dumps({"error": "topic could not be deleted"}))
+            return 1
+        print(json.dumps({"action": "deleted", "scope": scope.scope,
+                          "file": filename}))
+        return 0
+    if not scope.trash_topic(filename):
+        print(json.dumps({"error": "topic could not be trashed"}))
         return 1
-    print(json.dumps({"action": "deleted", "scope": scope.scope,
+    print(json.dumps({"action": "trashed", "scope": scope.scope,
+                      "file": filename,
+                      "hint": "restore with: muse-memory restore "
+                              f"{scope.scope}/{filename}"}))
+    return 0
+
+
+def cmd_restore(args) -> int:
+    store = _store(args)
+    scope_name = getattr(args, "scope", None) or "project-personal"
+    filename = args.file.strip().lstrip("/").replace("\\", "/").split("/")[-1]
+    if "/" in args.file:
+        maybe_scope, _maybe_file = args.file.split("/", 1)
+        if maybe_scope in ("global", "project-personal", "project-shared"):
+            scope_name = maybe_scope
+    scope = store.get_scope(scope_name)
+    if scope is None or not scope.restore_topic(filename):
+        print(json.dumps({"error": f"not in trash: {scope_name}/{filename}"}))
+        return 1
+    print(json.dumps({"action": "restored", "scope": scope.scope,
                       "file": filename}))
     return 0
+
+
+def cmd_approve(args) -> int:
+    from muse_memory.service import MemoryService
+    report = MemoryService(args.cwd, scopes=args.scopes).approve_pending()
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def cmd_eval(args) -> int:
+    from muse_memory import evalset
+    report = evalset.run_eval()
+    print(json.dumps(report, indent=2))
+    ok = (report["recall_top1"] >= 0.99 and report["recall_at3"] >= 0.99
+          and report["capture_precision"] >= 0.99
+          and report["capture_recall"] >= 0.99)
+    return 0 if ok else 1
 
 
 def cmd_archive(args) -> int:
@@ -573,6 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--importance", type=int, default=3)
     p.add_argument("--auto", action="store_true",
                    help="extract + file candidates automatically")
+    p.add_argument("--supersedes", default=None,
+                   help="topic file this memory replaces (archived)")
     p.set_defaults(fn=cmd_save)
 
     p = sub.add_parser("search", help="alias of recall")
@@ -598,7 +658,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("consolidate", help="file pending candidates / text")
     p.add_argument("--text", default="")
+    p.add_argument("--approve-all", action="store_true",
+                   help="file every queued proposal, not just high-confidence ones")
     p.set_defaults(fn=cmd_consolidate)
+
+    sub.add_parser("approve", help="file all queued capture proposals").set_defaults(fn=cmd_approve)
+    sub.add_parser("eval", help="run the golden recall/capture evaluation").set_defaults(fn=cmd_eval)
 
     p = sub.add_parser("cleanup", help="dedupe + merge + expire + trim + caps")
     p.add_argument("--json", action="store_true")
@@ -625,7 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("config", help="show effective config").set_defaults(fn=cmd_config)
 
     for name, fn, help_text in (
-            ("forget", cmd_forget, "delete a topic file"),
+            ("forget", cmd_forget, "trash a topic file (restore to undo)"),
             ("archive", cmd_archive, "retire a topic file to archive/"),
             ("pin", cmd_pin, "pin a topic (index priority, never retired)"),
             ("unpin", cmd_unpin, "remove a topic pin")):
@@ -634,7 +699,17 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--scope",
                        choices=["global", "project-personal", "project-shared"],
                        default=None)
+        if name == "forget":
+            p.add_argument("--purge", action="store_true",
+                           help="delete permanently instead of trashing")
         p.set_defaults(fn=fn)
+
+    p = sub.add_parser("restore", help="restore a trashed topic file")
+    p.add_argument("file", help="topic file, optionally scope/file")
+    p.add_argument("--scope",
+                   choices=["global", "project-personal", "project-shared"],
+                   default=None)
+    p.set_defaults(fn=cmd_restore)
 
     p = sub.add_parser("export", help="bundle topics to one portable file")
     p.add_argument("--scope",

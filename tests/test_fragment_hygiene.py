@@ -130,7 +130,7 @@ class StopCapTest(IsolatedCase):
 
 
 class StartupMaintenanceTest(IsolatedCase):
-    def test_start_retires_fragments_and_reports(self) -> None:
+    def test_start_is_read_only_then_session_end_retires(self) -> None:
         store = MemoryStore(self.work)
         store.ensure_all()
         scope = store.get_scope("project-personal")
@@ -147,7 +147,13 @@ class StartupMaintenanceTest(IsolatedCase):
             env=_hook_env(self.data_home, self.config_home), cwd=str(ROOT))
         self.assertEqual(proc.returncode, 0)
         payload = json.loads(proc.stdout)
-        self.assertIn("retired 1 fragments", payload["systemMessage"])
+        self.assertIn("muse-memory", payload["systemMessage"])
+        # Read-only hot path: startup must not retire or move anything.
+        self.assertTrue((scope.dir / "junk.md").exists())
+        self.assertFalse((scope.dir / ".rag-index.db").exists())
+        # Maintenance now runs at SessionEnd instead.
+        from muse_memory import lifecycle
+        lifecycle.session_end(self.work, "abc")
         self.assertFalse((scope.dir / "junk.md").exists())
         self.assertTrue((scope.dir / "archive" / "junk.md").is_file())
         self.assertTrue((scope.dir / "keep.md").is_file())

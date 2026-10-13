@@ -120,3 +120,30 @@ validators re-run clean; wheel rebuilt as
 `dist/muse_memory-1.0.1-py3-none-any.whl`. The fix is forward-only: existing
 user stores self-heal at the next SessionStart; no store was modified during
 verification (all runs used isolated temp copies).
+
+## Follow-up round: SQLite index, proposals, live install (v1.1.0, 2026-10-13)
+
+Changes: JSON RAG cache replaced by a disposable SQLite FTS5 index
+(`.rag-index.db`, stdlib `sqlite3`; in-memory BM25 fallback when FTS5 is
+unavailable); CLI/MCP/hooks unified behind `muse_memory/service.py`;
+SessionStart and UserPromptSubmit made read-only (use signals queue to
+`.access.jsonl` and drain at Stop/SessionEnd); auto-capture became
+proposal-based (high-confidence files at Stop/SessionEnd, the rest held for
+`approve` and expired after 7 days); `project-shared` filing became
+fail-closed for credential-like/high-entropy content; `/forget` now trashes
+with `/restore` undo; explicit `supersedes` linking added; golden
+recall/capture eval added (`muse_memory eval`, all metrics 1.0 on the
+frozen set).
+
+Verification: `python -m unittest discover -s tests` — 197 passed.
+`muse skills validate` and `muse plugins validate` — `valid: true`, empty
+diagnostics (Muse Code 1.4.7). Live install against the real user profile:
+marketplace update, plugin update 1.0.1 -> 1.1.0, approve + enable,
+installed-cache SessionStart hook test (exit 0, context injected), a
+headless session that saved via `memory_save` and recalled the fact, a
+second headless session that recalled the first session's save, then
+uninstall and reinstall (1.1.0, enabled, approved) with the test memory
+purged. One host note: uninstall reported the old cache directory could
+not be fully deleted while a running session referenced it; the reinstall
+superseded it cleanly. Not verified: Linux/macOS live installs (no such
+hosts available here); CI covers those operating systems for unit tests.

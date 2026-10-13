@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -128,6 +129,7 @@ def queue_candidates(candidates: Iterable[dict], store: MemoryStore,
         return 0
     grouped: dict[str, list[dict]] = {}
     for cand in candidates:
+        cand = {**cand, "queued_at": float(cand.get("queued_at") or time.time())}
         grouped.setdefault(cand.get("scope", "project-personal"), []).append(cand)
     queued = 0
     for scope_name, items in grouped.items():
@@ -145,6 +147,60 @@ def queue_candidates(candidates: Iterable[dict], store: MemoryStore,
             except OSError:
                 continue
     return queued
+
+
+def queue_access(store: MemoryStore, scope_name: str, files) -> int:
+    """Append recall hits to a scope's access log (hot-path, append-only).
+
+    UserPromptSubmit records use signals here instead of writing topic
+    metadata; Stop/SessionEnd drain the log into real access counts.
+    """
+    scope = store.get_scope(scope_name)
+    names = [f for f in files if f]
+    if scope is None or not names:
+        return 0
+    try:
+        scope.dir.mkdir(parents=True, exist_ok=True)
+        with (scope.dir / paths.ACCESS_FILE).open("a", encoding="utf-8") as fh:
+            for name in names:
+                fh.write(json.dumps({"file": name, "ts": time.time()}) + "\n")
+    except OSError:
+        return 0
+    return len(names)
+
+
+def drain_access(store: MemoryStore) -> int:
+    """Apply queued access signals, one count per file per drain."""
+    applied = 0
+    for scope in store.scopes.values():
+        log = scope.dir / paths.ACCESS_FILE
+        if not log.is_file():
+            continue
+        with scope_lock(scope.dir):
+            try:
+                lines = log.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            seen: list[str] = []
+            for line in lines:
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                name = item.get("file") if isinstance(item, dict) else None
+                if name and name not in seen:
+                    seen.append(str(name))
+            for name in seen:
+                try:
+                    scope.touch_access(name)
+                    applied += 1
+                except OSError:
+                    continue
+            try:
+                log.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return applied
 
 
 def drain_pending(store: MemoryStore, max_items: int = 200) -> list[dict]:
@@ -181,12 +237,39 @@ def drain_pending(store: MemoryStore, max_items: int = 200) -> list[dict]:
 # -- session jobs ---------------------------------------------------------------
 
 
+def _proposal_eligible(cand: dict, auto_file_importance: int | None,
+                       approve_all: bool) -> bool:
+    if approve_all or auto_file_importance is None:
+        return True
+    if cand.get("source") == "manual":
+        return True
+    if cand.get("kind") in ("rule", "decision"):
+        return True
+    try:
+        return int(cand.get("importance", 3)) >= auto_file_importance
+    except (TypeError, ValueError):
+        return False
+
+
 def file_pending(store: MemoryStore, max_items: int = 200,
-                 dedupe_threshold: float = 0.85, min_importance: int = 1) -> dict:
-    """Acknowledge queued lines only after successful filing; failures stay queued."""
+                 dedupe_threshold: float = 0.85, min_importance: int = 1,
+                 approve_all: bool = False,
+                 auto_file_importance: int | None = None,
+                 proposal_ttl_days: int | None = None,
+                 now: float | None = None) -> dict:
+    """Acknowledge queued lines only after successful filing; failures stay queued.
+
+    Proposal policy (when auto_file_importance is set): auto-captured
+    candidates below the threshold stay queued as proposals until they
+    expire after proposal_ttl_days or are filed with approve_all. Manual
+    saves, rules, and decisions always file.
+    """
     actions: dict[str, int] = {}
     files: list[str] = []
     attempted = 0
+    held = 0
+    expired = 0
+    now = now if now is not None else time.time()
     for scope in store.scopes.values():
         if attempted >= max_items:
             break
@@ -200,13 +283,23 @@ def file_pending(store: MemoryStore, max_items: int = 200,
                 if attempted >= max_items:
                     kept.append(line)
                     continue
-                attempted += 1
                 try:
                     cand = json.loads(line)
                     if not isinstance(cand, dict) or not isinstance(cand.get('text'), str):
                         raise ValueError('invalid queued candidate')
                     if int(cand.get('importance', 3)) < min_importance:
                         continue
+                    if not _proposal_eligible(cand, auto_file_importance,
+                                              approve_all):
+                        queued_at = float(cand.get('queued_at') or 0.0)
+                        if (proposal_ttl_days and queued_at and
+                                now - queued_at > proposal_ttl_days * 86400):
+                            expired += 1
+                            continue
+                        held += 1
+                        kept.append(line)
+                        continue
+                    attempted += 1
                     result = cons.file_candidate(cand, store, dedupe_threshold)
                 except (OSError, ValueError, TypeError):
                     kept.append(line)
@@ -219,7 +312,8 @@ def file_pending(store: MemoryStore, max_items: int = 200,
                 os.replace(tmp, pending)
             else:
                 pending.unlink(missing_ok=True)
-    return {'actions': actions, 'files': files, 'candidates': len(files)}
+    return {'actions': actions, 'files': files, 'candidates': len(files),
+            'proposals_held': held, 'proposals_expired': expired}
 
 
 def session_end(cwd: str | os.PathLike | None = None,
@@ -242,15 +336,15 @@ def session_end(cwd: str | os.PathLike | None = None,
     min_imp = int(cfg.get("capture_min_importance", 2))
     candidates = [c for c in candidates if int(c.get("importance", 3)) >= min_imp]
 
-    report["consolidation"] = cons.consolidate_session(
-        candidates, store, float(cfg.get("dedupe_threshold", 0.85)))
-    pending_report = file_pending(store, int(cfg['max_pending']),
-                                  float(cfg['dedupe_threshold']), min_imp)
-    filed = report['consolidation']
-    for action, count in pending_report['actions'].items():
-        filed['actions'][action] = filed['actions'].get(action, 0) + count
-    filed['files'].extend(pending_report['files'])
-    filed['candidates'] += pending_report['candidates']
+    # Transcript captures join the same proposal queue as tool captures;
+    # one writer (this call) files everything that clears the policy.
+    if candidates:
+        queue_candidates(candidates, store, int(cfg['max_pending']))
+    drain_access(store)
+    report["consolidation"] = file_pending(
+        store, int(cfg['max_pending']), float(cfg['dedupe_threshold']),
+        min_imp, auto_file_importance=int(cfg['capture_auto_file_importance']),
+        proposal_ttl_days=int(cfg['proposal_ttl_days']))
     if cfg.get("auto_cleanup", True):
         report["cleanup"] = cons.cleanup(store, cfg)
     return report
@@ -268,9 +362,13 @@ def stop_checkpoint(cwd: str | os.PathLike | None = None,
     cfg = config_mod.load(cwd)
     store = MemoryStore(cwd)
     store.ensure_all()
+    drain_access(store)
     limit = min(int(cfg.get("max_pending", 200)), STOP_DRAIN_MAX)
-    report = file_pending(store, limit, float(cfg['dedupe_threshold']),
-                          int(cfg['capture_min_importance']))
+    report = file_pending(
+        store, limit, float(cfg['dedupe_threshold']),
+        int(cfg['capture_min_importance']),
+        auto_file_importance=int(cfg['capture_auto_file_importance']),
+        proposal_ttl_days=int(cfg['proposal_ttl_days']))
     retired = 0
     if cfg.get("auto_cleanup", True):
         # SessionEnd may never fire (killed terminals, crashes); enforce
@@ -281,4 +379,6 @@ def stop_checkpoint(cwd: str | os.PathLike | None = None,
                 int(cfg.get("max_files_per_scope", 40)))["retired_for_cap"]
     return {"filed": report.get("candidates", 0),
             "actions": report.get("actions", {}),
+            "proposals_held": report.get("proposals_held", 0),
+            "proposals_expired": report.get("proposals_expired", 0),
             "retired_for_cap": retired}

@@ -4,7 +4,7 @@ Layout per scope directory:
     MEMORY.md            index, one line per topic file: - [title](file.md) - summary
     <topic>.md           one Markdown file per topic (human + agent readable)
     .memory-meta.json    machine sidecar: per-file importance/access/expiry
-    .rag-index.json      RAG sidecar (see rag.py)
+    .rag-index.db        disposable SQLite FTS5 index (see rag.py)
     .pending.jsonl       capture queue drained at Stop/SessionEnd
     archive/             retired memories (still searchable on demand)
 
@@ -389,10 +389,65 @@ class ScopeStore:
 
     def _invalidate_index(self) -> None:
         """Drop the cached RAG index so the next recall rebuilds from disk."""
+        for name in (paths.RAG_INDEX, paths.LEGACY_RAG_INDEX,
+                     paths.RAG_INDEX + "-wal", paths.RAG_INDEX + "-shm"):
+            try:
+                (self.dir / name).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @_serialized
+    def trash_topic(self, filename: str) -> bool:
+        """Move a topic to .trash/ (recoverable via restore_topic)."""
+        src = self.dir / filename
+        if not src.is_file():
+            return False
+        dest_dir = self.dir / paths.TRASH_DIR
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        destination = dest_dir / filename
+        if destination.exists():
+            destination = dest_dir / f"{src.stem}-{time.time_ns()}{src.suffix}"
         try:
-            (self.dir / paths.RAG_INDEX).unlink(missing_ok=True)
+            src.rename(destination)
         except OSError:
-            pass
+            return False
+        trashed_key = destination.relative_to(self.dir).as_posix()
+        self._load_meta()[trashed_key] = dict(self.file_meta(filename))
+        self._dirty_updates.add(trashed_key)
+        self._load_meta().pop(filename, None)
+        self._dirty_deletes.add(filename)
+        self._save_meta()
+        self.refresh_index()
+        self._invalidate_index()
+        return True
+
+    def trashed_files(self) -> list[str]:
+        trash = self.dir / paths.TRASH_DIR
+        if not trash.is_dir():
+            return []
+        return sorted(p.name for p in trash.iterdir()
+                      if p.is_file() and p.suffix.lower() == ".md")
+
+    @_serialized
+    def restore_topic(self, filename: str) -> bool:
+        """Move a trashed topic back into the live scope."""
+        src = self.dir / paths.TRASH_DIR / filename
+        target = self.dir / filename
+        if not src.is_file() or target.exists():
+            return False
+        try:
+            src.rename(target)
+        except OSError:
+            return False
+        trashed_key = f"{paths.TRASH_DIR}/{filename}"
+        self._load_meta()[filename] = dict(self.file_meta(trashed_key))
+        self._dirty_updates.add(filename)
+        self._load_meta().pop(trashed_key, None)
+        self._dirty_deletes.add(trashed_key)
+        self._save_meta()
+        self.refresh_index()
+        self._invalidate_index()
+        return True
 
     @_serialized
     def delete_topic(self, filename: str) -> bool:

@@ -1,9 +1,11 @@
 """Built-in RAG retrieval over memory scopes. Standard library only.
 
-Pipeline: chunk Markdown records -> TF-IDF vectors with BM25-style term
-saturation -> cosine similarity fused with recency / importance / access
-signals. The index persists as JSON next to each scope so hooks stay fast
-(incremental rebuild only when topic files changed).
+Pipeline: chunk Markdown records -> SQLite FTS5 (stdlib sqlite3) BM25
+ranking fused with recency / importance / access signals. The index
+persists as a disposable `.rag-index.db` next to each scope and is rebuilt
+from the Markdown topics whenever their signature changes; deleting it
+loses nothing. When FTS5 is unavailable in the local SQLite build, search
+falls back to the in-memory BM25 implementation below.
 
 This is deliberately dependency-free: hooks run with a cleared environment
 outside the sandbox, so numpy/sentence-transformers cannot be assumed.
@@ -18,6 +20,7 @@ import hashlib
 import math
 import os
 import re
+import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 
@@ -117,23 +120,32 @@ class RagIndex:
         self._tokens: list[list[str]] = []
         self._title_tokens: list[set[str]] = []
         self._counters: list[Counter] = []
+        self._db_path: str | None = None  # set when backed by the FTS5 store
+
+    def _derive(self) -> None:
+        """Rebuild in-memory BM25 structures from self.chunks."""
+        self._tokens = [tokenize(c.get("text", "") + " " + c.get("title", ""))
+                        for c in self.chunks]
+        self._lengths = [len(t) or 1 for t in self._tokens]
+        self._title_tokens = [set(tokenize(c.get("title", "")))
+                              for c in self.chunks]
+        self._counters = [Counter(t) for t in self._tokens]
+        self.doc_freq = {}
+        for toks in self._tokens:
+            for term in set(toks):
+                self.doc_freq[term] = self.doc_freq.get(term, 0) + 1
+        self.avg_len = (sum(self._lengths) / len(self._lengths)
+                        if self._lengths else 1.0)
 
     # -- build ------------------------------------------------------------
     def build(self, records: list[MemoryRecord], source_mtime: float = 0.0) -> None:
         self.chunks = []
         for rec in records:
             self.chunks.extend(chunk_record(rec))
-        self._tokens = [tokenize(c["text"] + " " + c["title"]) for c in self.chunks]
-        self._lengths = [len(t) or 1 for t in self._tokens]
-        self._title_tokens = [set(tokenize(c["title"])) for c in self.chunks]
-        self._counters = [Counter(t) for t in self._tokens]
-        self.doc_freq = {}
-        for toks in self._tokens:
-            for term in set(toks):
-                self.doc_freq[term] = self.doc_freq.get(term, 0) + 1
-        self.avg_len = (sum(self._lengths) / len(self._lengths)) if self._lengths else 1.0
+        self._derive()
         self.built_at = utc_now()
         self.source_mtime = source_mtime
+        self._db_path = None
 
     # -- search -----------------------------------------------------------
     def _bm25(self, query_terms: list[str], idx: int) -> float:
@@ -155,6 +167,56 @@ class RagIndex:
             score *= 1 + 0.25 * overlap
         return score
 
+    def _search_fts(self, q_terms: list[str], top_k: int,
+                    min_score: float, now: float,
+                    since: float | None,
+                    until: float | None) -> list[ScoredChunk] | None:
+        """FTS5 BM25 search over the persisted index; None means unavailable."""
+        match = " OR ".join(
+            '"' + term.replace('"', '""') + '"' for term in dict.fromkeys(q_terms))
+        if not match:
+            return []
+        try:
+            conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+            try:
+                rows = conn.execute(
+                    "SELECT chunk_id, scope, file, title, text, importance,"
+                    " updated, created, accessed, access_count,"
+                    " bm25(chunks_fts, 0.0, 0.0, 0.0, 4.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)"
+                    " FROM chunks_fts WHERE chunks_fts MATCH ?"
+                    " ORDER BY bm25(chunks_fts, 0.0, 0.0, 0.0, 4.0, 1.0,"
+                    " 0.0, 0.0, 0.0, 0.0, 0.0)",
+                    (match,)).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return None
+        # FTS5 bm25() is negative-better, but its sign flips on tiny
+        # corpora (IDF goes negative when a term is in most chunks), so
+        # derive a positive lexical score relative to the worst match.
+        worst = max((float(r[10] or 0.0) for r in rows), default=0.0)
+        scored: list[ScoredChunk] = []
+        for (chunk_id, scope, file, title, text, importance, updated,
+             created, accessed, access_count, rank) in rows:
+            chunk = {"importance": int(importance or 3),
+                     "updated": float(updated or 0.0),
+                     "created": float(created or 0.0),
+                     "accessed": float(accessed or 0.0),
+                     "access_count": int(access_count or 0)}
+            if not _in_range(chunk, since, until):
+                continue
+            lexical = worst - float(rank or 0.0) + 1.0
+            if lexical <= 0:
+                continue
+            score = _fuse(lexical, chunk, now)
+            if score >= min_score:
+                scored.append(ScoredChunk(
+                    chunk_id=str(chunk_id), scope=str(scope), file=str(file),
+                    title=str(title), text=str(text), score=score,
+                    lexical=lexical, importance=int(importance or 3)))
+        scored.sort(key=lambda s: s.score, reverse=True)
+        return scored[:top_k]
+
     def search(self, query: str, top_k: int = 5, min_score: float = 0.0,
                now: float | None = None,
                since: float | None = None,
@@ -162,6 +224,12 @@ class RagIndex:
         q_terms = tokenize(query)
         if not q_terms or not self.chunks:
             return []
+        if self._db_path:
+            hits = self._search_fts(q_terms, top_k, min_score,
+                                    now if now is not None else utc_now(),
+                                    since, until)
+            if hits is not None:
+                return hits
         now = now if now is not None else utc_now()
         scored: list[ScoredChunk] = []
         for i, chunk in enumerate(self.chunks):
@@ -191,19 +259,97 @@ class RagIndex:
 
     @classmethod
     def from_dict(cls, data: dict) -> "RagIndex":
+        """Legacy JSON-cache shape, kept so old callers/tests still parse."""
         idx = cls()
         idx.chunks = data.get("chunks", [])
-        idx.doc_freq = data.get("doc_freq", {})
         idx.avg_len = data.get("avg_len", 1.0) or 1.0
         idx.built_at = data.get("built_at", 0.0)
         idx.source_mtime = data.get("source_mtime", 0.0)
         idx.source_signature = data.get('source_signature', '')
-        idx._tokens = [tokenize(c.get("text", "") + " " + c.get("title", ""))
-                       for c in idx.chunks]
-        idx._lengths = [len(t) or 1 for t in idx._tokens]
-        idx._title_tokens = [set(tokenize(c.get("title", ""))) for c in idx.chunks]
-        idx._counters = [Counter(t) for t in idx._tokens]
+        idx._derive()
+        idx.avg_len = data.get("avg_len", 1.0) or idx.avg_len
         return idx
+
+
+_FTS_SCHEMA = (
+    "CREATE VIRTUAL TABLE chunks_fts USING fts5("
+    "chunk_id UNINDEXED, scope UNINDEXED, file UNINDEXED, title, text,"
+    " importance UNINDEXED, updated UNINDEXED, created UNINDEXED,"
+    " accessed UNINDEXED, access_count UNINDEXED)")
+
+
+def _write_db(store: ScopeStore, idx: RagIndex, signature: str) -> bool:
+    """Persist idx as a disposable FTS5 database; False when unavailable."""
+    index_path = store.dir / paths.RAG_INDEX
+    tmp = store.dir / f".rag-index.db.tmp-{os.getpid()}"
+    try:
+        store.dir.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(tmp))
+        try:
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+            conn.execute(_FTS_SCHEMA)
+            conn.executemany(
+                "INSERT INTO meta VALUES (?, ?)",
+                [("source_signature", signature),
+                 ("built_at", str(idx.built_at)),
+                 ("source_mtime", str(idx.source_mtime))])
+            conn.executemany(
+                "INSERT INTO chunks_fts VALUES (?,?,?,?,?,?,?,?,?,?)",
+                [(str(c.get("chunk_id", "")), str(c.get("scope", "")),
+                  str(c.get("file", "")), str(c.get("title", "")),
+                  str(c.get("text", "")), int(c.get("importance", 3)),
+                  float(c.get("updated", 0.0)), float(c.get("created", 0.0)),
+                  float(c.get("accessed", 0.0)),
+                  int(c.get("access_count", 0))) for c in idx.chunks])
+            conn.commit()
+        finally:
+            conn.close()
+        os.replace(tmp, index_path)
+        for suffix in ("-wal", "-shm"):
+            try:
+                (store.dir / (paths.RAG_INDEX + suffix)).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return True
+    except (OSError, sqlite3.Error):
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def _read_db(index_path) -> RagIndex | None:
+    """Load a persisted FTS5 index, or None when unreadable/misshapen."""
+    try:
+        conn = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
+        try:
+            meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+            rows = conn.execute(
+                "SELECT chunk_id, scope, file, title, text, importance,"
+                " updated, created, accessed, access_count"
+                " FROM chunks_fts").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    idx = RagIndex()
+    idx.chunks = [{
+        "chunk_id": str(r[0]), "record_id": str(r[0]).rsplit(":", 1)[0],
+        "scope": str(r[1]), "file": str(r[2]), "title": str(r[3]),
+        "text": str(r[4]), "importance": int(r[5] or 3),
+        "updated": float(r[6] or 0.0), "created": float(r[7] or 0.0),
+        "accessed": float(r[8] or 0.0), "access_count": int(r[9] or 0),
+    } for r in rows]
+    idx.source_signature = meta.get("source_signature", "")
+    try:
+        idx.built_at = float(meta.get("built_at", 0.0))
+        idx.source_mtime = float(meta.get("source_mtime", 0.0))
+    except ValueError:
+        idx.built_at = idx.source_mtime = 0.0
+    idx._derive()
+    idx._db_path = str(index_path)
+    return idx
 
 
 def _fuse_parts(lexical: float, chunk: dict, now: float) -> dict:
@@ -264,31 +410,46 @@ def scope_mtime(store: ScopeStore) -> float:
 
 
 def load_or_build(store: ScopeStore, force: bool = False) -> RagIndex:
-    """Load a cached scope index, rebuilding when topic files changed."""
+    """Load the persisted FTS5 index, rebuilding when topics changed."""
     index_path = store.dir / paths.RAG_INDEX
-    mtime = scope_mtime(store)
     signature = scope_signature(store)
     if not force and index_path.is_file():
-        try:
-            data = json.loads(index_path.read_text(encoding="utf-8"))
-            idx = RagIndex.from_dict(data)
-            if idx.source_signature == signature:
-                return idx
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass  # corrupt cache: fall through and rebuild from disk
+        idx = _read_db(index_path)
+        if idx is not None and idx.source_signature == signature:
+            return idx
     idx = RagIndex()
-    idx.build(store.read_all(), source_mtime=mtime or utc_now())
+    idx.build(store.read_all(), source_mtime=scope_mtime(store) or utc_now())
     idx.source_signature = signature
     try:
         with scope_lock(store.dir):
             # Another writer may have changed source files during this build.
             if scope_signature(store) != signature:
                 return load_or_build(store, force=True)
-            tmp = index_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(idx.to_dict()), encoding="utf-8")
-            os.replace(tmp, index_path)
+            if _write_db(store, idx, signature):
+                idx._db_path = str(index_path)
+            try:  # retire the pre-SQLite JSON cache on first rebuild
+                (store.dir / paths.LEGACY_RAG_INDEX).unlink(missing_ok=True)
+            except OSError:
+                pass
     except OSError:
         pass
+    return idx
+
+
+def load_cached(store: ScopeStore) -> RagIndex:
+    """Read-only index for hot paths: fresh DB if present, else in-memory.
+
+    Never writes the index file, so SessionStart/UserPromptSubmit stay
+    read-only with respect to topics, metadata, and the persisted index.
+    """
+    index_path = store.dir / paths.RAG_INDEX
+    if index_path.is_file():
+        idx = _read_db(index_path)
+        if idx is not None and idx.source_signature == scope_signature(store):
+            return idx
+    idx = RagIndex()
+    idx.build(store.read_all(), source_mtime=scope_mtime(store) or utc_now())
+    idx.source_signature = scope_signature(store)
     return idx
 
 
@@ -312,17 +473,13 @@ def index_health(store: ScopeStore) -> dict:
     """
     index_path = store.dir / paths.RAG_INDEX
     if not index_path.is_file():
-        return {"indexed": False, "chunks": 0, "stale": False}
-    try:
-        data = json.loads(index_path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or not isinstance(
-                data.get("chunks"), list):
-            raise ValueError("misshapen index")
-        chunks = data["chunks"]
-        stale = data.get('source_signature') != scope_signature(store)
-    except (OSError, ValueError, TypeError):
+        legacy = (store.dir / paths.LEGACY_RAG_INDEX).is_file()
+        return {"indexed": False, "chunks": 0, "stale": legacy}
+    idx = _read_db(index_path)
+    if idx is None:
         return {"indexed": False, "chunks": 0, "stale": True}
-    return {"indexed": True, "chunks": len(chunks), "stale": stale}
+    return {"indexed": True, "chunks": len(idx.chunks),
+            "stale": idx.source_signature != scope_signature(store)}
 
 
 def search_all(stores: list[ScopeStore], query: str, top_k: int = 5,
@@ -330,7 +487,8 @@ def search_all(stores: list[ScopeStore], query: str, top_k: int = 5,
                include_archive: bool = False,
                since: float | None = None,
                until: float | None = None,
-               now: float | None = None) -> list[ScoredChunk]:
+               now: float | None = None,
+               read_only: bool = False) -> list[ScoredChunk]:
     """Search every scope index and merge rankings (round-robin safe merge).
 
     since/until restrict hits to memories filed in [since, until), for
@@ -343,7 +501,7 @@ def search_all(stores: list[ScopeStore], query: str, top_k: int = 5,
     now = now if now is not None else utc_now()
     per: list[ScoredChunk] = []
     for store in stores:
-        indexes = [load_or_build(store)]
+        indexes = [load_cached(store) if read_only else load_or_build(store)]
         if include_archive:
             archived_recs = store.read_archive()
             if archived_recs:
@@ -372,7 +530,8 @@ def search_all(stores: list[ScopeStore], query: str, top_k: int = 5,
     if ranged and not per and query.strip():
         return search_all(stores, "", top_k=top_k, min_score=min_score,
                           include_archive=include_archive,
-                          since=since, until=until, now=now)
+                          since=since, until=until, now=now,
+                          read_only=read_only)
     # Normalize per-scope lexical scales by best hit, then re-sort by fused score.
     best: dict[str, float] = {}
     for hit in per:

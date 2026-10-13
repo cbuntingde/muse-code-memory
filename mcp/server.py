@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-SERVER_INFO = {"name": "muse-memory", "version": "1.0.1"}
+SERVER_INFO = {"name": "muse-memory", "version": "1.1.0"}
 
 TOOLS = [
     {
@@ -61,6 +61,9 @@ TOOLS = [
                                "default": 3},
                 "tags": {"type": "array", "items": {"type": "string"},
                          "default": []},
+                "supersedes": {"type": "string",
+                               "description": "Topic file this memory "
+                                              "replaces; it is archived"},
             },
             "required": ["text"],
         },
@@ -105,47 +108,22 @@ def _lazy():
     return config_mod, cons, extractor, rag, MemoryStore
 
 
+def _service():
+    from muse_memory.service import MemoryService
+    return MemoryService()
+
+
 def tool_recall(args: dict) -> str:
-    config_mod, _c, _e, rag, MemoryStore = _lazy()
-    from muse_memory import dates
-    cfg = config_mod.load()
-    store = MemoryStore()
-    query = str(args.get("query", ""))
-    cleaned, auto = dates.split_query(query)
-    since, until = auto if auto else (None, None)
-    for key, is_start in (("since", True), ("until", False)):
-        if args.get(key):
-            parsed = dates.parse_day(str(args[key]))
-            if parsed is None:
-                return f"error: {key} must be YYYY-MM-DD, got {args[key]!r}"
-            if is_start:
-                since = parsed[0]
-            else:
-                until = parsed[1]
-    if since is not None and until is not None and since > until:
-        return (f"error: empty date range ({dates.label(since, until)}): "
-                f"since is after until")
-    hits = rag.search_all(
-        list(store.scopes.values()), cleaned,
-        top_k=int(args.get("top_k", 0) or cfg["recall_top_k"]),
-        min_score=float(cfg["min_score"]),
-        include_archive=bool(args.get("include_archive", False)),
-        since=since, until=until)
-    if not hits:
-        return "(no relevant memory)"
-    for hit in hits[:3]:
-        if hit.archived:
-            continue
-        scope = store.get_scope(hit.scope)
-        if scope is not None:
-            try:
-                scope.touch_access(hit.file)
-            except OSError:
-                pass
-    header = (f"Relevant memory ({dates.label(since, until)}):"
-              if since is not None or until is not None else None)
-    return rag.format_context(hits, int(cfg["recall_max_chars"]),
-                              header=header)
+    svc = _service()
+    try:
+        return svc.recall_text(
+            str(args.get("query", "")),
+            top_k=int(args.get("top_k", 0) or svc.cfg["recall_top_k"]),
+            include_archive=bool(args.get("include_archive", False)),
+            since=str(args["since"]) if args.get("since") else None,
+            until=str(args["until"]) if args.get("until") else None)
+    except ValueError as exc:
+        return f"error: {exc}"
 
 
 def tool_save(args: dict) -> str:
@@ -161,25 +139,21 @@ def tool_save(args: dict) -> str:
     text = args['text'].strip()
     if not text:
         return "error: empty text"
-    text, secret_kinds = extractor.redact_secrets(text)
-    # An explicit scope always wins; otherwise honor the user's configured
-    # default (same rule as the save CLI), instead of a hardcoded scope.
-    cfg = config_mod.load()
-    scope_name = str(args.get("scope")
-                     or cfg.get("default_scope", "project-personal"))
-    if scope_name not in ("global", "project-personal", "project-shared"):
-        return f"error: unknown scope {scope_name!r}"
-    cand = {
-        "text": text,
-        "kind": "note",
-        "topic": str(args.get("topic") or extractor.suggest_topic(text, "note")),
-        "importance": int(args.get("importance", 3)),
-        "tags": list(args.get("tags", [])),
-        "scope": scope_name,
-        "source": "manual",
-        "session_id": "",
-    }
-    result = cons.file_candidate(cand, MemoryStore())
+    # An explicit scope always wins; otherwise the configured default.
+    svc = _service()
+    try:
+        result = svc.save(
+            text, topic=str(args.get("topic") or "") or None,
+            scope=str(args.get("scope") or "") or None,
+            importance=int(args.get("importance", 3)),
+            tags=list(args.get("tags", [])),
+            supersedes=str(args.get("supersedes") or "") or None)
+    except ValueError as exc:
+        return f"error: {exc}"
+    secret_kinds = result.pop("redacted", [])
+    if result.get("action") == "blocked-secret":
+        return ("error: refused for project-shared scope: credential-like "
+                f"content ({', '.join(result.get('blocked', []))})")
     headline = (f"muse-memory saved: {result['scope']}/{result['file']} "
                 f"({result['action']})")
     if secret_kinds:
@@ -188,22 +162,7 @@ def tool_save(args: dict) -> str:
 
 
 def tool_stats(_args: dict) -> str:
-    _cfg, _c, _e, rag, MemoryStore = _lazy()
-    store = MemoryStore()
-    stats: dict = {}
-    for name, scope in store.scopes.items():
-        records = scope.read_all()
-        histogram: dict[str, int] = {}
-        for rec in records:
-            histogram[str(rec.importance)] = histogram.get(
-                str(rec.importance), 0) + 1
-        stats[name] = {"dir": str(scope.dir), "files": len(records),
-                       "chars": sum(len(r.content) for r in records),
-                       "importance": histogram,
-                       "pending": scope.pending_count(),
-                       "archived": scope.archive_count(),
-                       "index": rag.index_health(scope)}
-    return json.dumps(stats, indent=2)
+    return json.dumps(_service().stats(), indent=2)
 
 
 def tool_list(args: dict) -> str:
@@ -222,8 +181,8 @@ def tool_list(args: dict) -> str:
         limit = max(1, min(48, int(args.get("limit", 20))))
     except (TypeError, ValueError):
         limit = 20
-    rows = listing.list_rows(MemoryStore(), scope,
-                             str(tag) if tag else None, min_importance)
+    rows = _service().list_rows(scope, str(tag) if tag else None,
+                                min_importance)
     if not rows:
         return listing.empty_message(bool(scope or tag or min_importance > 1))
     shown = rows[:limit]

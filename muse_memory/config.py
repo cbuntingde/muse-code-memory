@@ -19,6 +19,8 @@ DEFAULTS: dict[str, Any] = {
     "capture_enabled": True,
     "capture_tool_result_max_chars": 6000,
     "capture_min_importance": 2,
+    "capture_auto_file_importance": 4,
+    "proposal_ttl_days": 7,
     # Storage caps (Muse injects max 48 memory files into context)
     "max_files_per_scope": 40,
     "max_chars_per_file": 12000,
@@ -46,6 +48,8 @@ _CONSTRAINTS: dict[str, tuple[str, float | None, float | None]] = {
     "capture_enabled": ("bool", None, None),
     "capture_tool_result_max_chars": ("int", 200, 200000),
     "capture_min_importance": ("int", 1, 5),
+    "capture_auto_file_importance": ("int", 1, 5),
+    "proposal_ttl_days": ("int", 1, 365),
     "max_files_per_scope": ("int", 1, 200),
     "max_chars_per_file": ("int", 500, 200000),
     "max_pending": ("int", 1, 2000),

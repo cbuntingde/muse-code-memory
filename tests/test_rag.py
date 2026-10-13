@@ -39,7 +39,7 @@ class RagTest(IsolatedCase):
         scope = ScopeStore("project-personal", self.data_home / "mem")
         seed(scope)
         first = rag.load_or_build(scope)
-        self.assertTrue((scope.dir / ".rag-index.json").is_file())
+        self.assertTrue((scope.dir / ".rag-index.db").is_file())
         second = rag.load_or_build(scope)
         self.assertEqual(len(first.chunks), len(second.chunks))
         scope.write_topic("extra-note", "# Extra\n\n- Something new here.\n")
@@ -59,7 +59,7 @@ class RagTest(IsolatedCase):
         seed(scope)
         self.assertTrue(rag.search_all([scope], "how do we deploy on Friday"))
         self.assertTrue(scope.delete_topic("deploy-process.md"))
-        self.assertFalse((scope.dir / ".rag-index.json").exists())
+        self.assertFalse((scope.dir / ".rag-index.db").exists())
         self.assertEqual(rag.search_all([scope], "how do we deploy on Friday"), [])
 
     def test_archive_invalidates_cached_index(self) -> None:
@@ -100,15 +100,24 @@ class RagTest(IsolatedCase):
     def test_corrupt_index_shapes_recover(self) -> None:
         scope = ScopeStore("project-personal", self.data_home / "mem")
         seed(scope)
-        for bad in ('{"chunks": 5, "source_mtime": "abc"}', "[1, 2, 3]",
-                    '{"chunks": [{"no": "text"}]}'):
-            (scope.dir / ".rag-index.json").write_text(bad, encoding="utf-8")
+        for bad in (b'not a sqlite database', b'', b'{"chunks": 5}'):
+            (scope.dir / ".rag-index.db").write_bytes(bad)
             health = rag.index_health(scope)
             self.assertIn("stale", health)
+            self.assertTrue(health["stale"])
             hits = rag.search_all([scope], "how do we deploy on Friday",
                                   top_k=2)
             self.assertTrue(hits)
             self.assertEqual(hits[0].file, "deploy-process.md")
+
+    def test_legacy_json_index_is_retired(self) -> None:
+        scope = ScopeStore("project-personal", self.data_home / "mem")
+        seed(scope)
+        (scope.dir / ".rag-index.json").write_text("{}", encoding="utf-8")
+        self.assertTrue(rag.index_health(scope)["stale"])
+        rag.load_or_build(scope)
+        self.assertTrue((scope.dir / ".rag-index.db").is_file())
+        self.assertFalse((scope.dir / ".rag-index.json").exists())
 
 
 if __name__ == "__main__":
