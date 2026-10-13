@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Stop: file pending candidates (light checkpoint, no full cleanup)."""
 
 import sys

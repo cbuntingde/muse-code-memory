@@ -6,7 +6,7 @@
       {
         "matcher": "*",
         "hooks": [
-          {"type": "command", "command": "python <plugin-dir>/hooks/session_start.py"}
+          {"type": "command", "command": "python3 <plugin-dir>/hooks/session_start.py"}
         ]
       }
     ],
@@ -14,7 +14,7 @@
       {
         "matcher": "*",
         "hooks": [
-          {"type": "command", "command": "python <plugin-dir>/hooks/user_prompt_submit.py"}
+          {"type": "command", "command": "python3 <plugin-dir>/hooks/user_prompt_submit.py"}
         ]
       }
     ]

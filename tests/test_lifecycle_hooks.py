@@ -24,6 +24,32 @@ class LifecycleTest(IsolatedCase):
         self.assertEqual(len(drained), 1)
         self.assertEqual(lifecycle.drain_pending(store), [])
 
+    def test_stop_checkpoint_bounds_one_run(self) -> None:
+        store = MemoryStore(self.work)
+        cands = [{"text": f"Durable project fact number {i} for drain cap.",
+                  "kind": "fact", "topic": f"drain-cap-{i}", "importance": 2,
+                  "tags": [], "scope": "project-personal", "source": "tool",
+                  "session_id": ""} for i in range(80)]
+        lifecycle.queue_candidates(cands, store)
+        report = lifecycle.stop_checkpoint(self.work, "")
+        self.assertEqual(report.get("filed"), lifecycle.STOP_DRAIN_MAX)
+        scope = MemoryStore(self.work).get_scope("project-personal")
+        assert scope is not None
+        self.assertEqual(scope.pending_count(), 80 - lifecycle.STOP_DRAIN_MAX)
+
+    def test_find_session_file_prefers_newest(self) -> None:
+        from muse_memory import paths
+        base = paths.muse_data_dir() / "sessions"
+        old = base / "2020" / "01" / "01" / "sess-abc" / "session.jsonl"
+        new = base / "2026" / "05" / "06" / "sess-abc" / "session.jsonl"
+        for path in (old, new):
+            path.parent.mkdir(parents=True)
+            path.write_text("{}\n", encoding="utf-8")
+        self.assertEqual(lifecycle.find_session_file("sess-abc"), new)
+        self.assertEqual(lifecycle.find_session_file("sess-a"), new)
+        self.assertIsNone(lifecycle.find_session_file("missing"))
+        self.assertIsNone(lifecycle.find_session_file(""))
+
     def test_session_end_files_and_cleans(self) -> None:
         store = MemoryStore(self.work)
         lifecycle.queue_candidates(
@@ -166,6 +192,23 @@ class McpServerTest(IsolatedCase):
         self.assertIn("muse-memory saved: project-personal/", text)
         self.assertIn("(created)", text)
         self.assertIn(".md", text)
+
+    def test_tool_save_honors_configured_default_scope(self) -> None:
+        from mcp.server import tool_save  # noqa: E402
+
+        cfg = self.config_home / "muse" / "memory" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps({"default_scope": "global"}),
+                       encoding="utf-8")
+        out = tool_save({"text": "Cross-project preference for testing saves."})
+        self.assertIn("muse-memory saved: global/", out)
+
+    def test_tool_save_rejects_unknown_scope(self) -> None:
+        from mcp.server import tool_save  # noqa: E402
+
+        out = tool_save({"text": "Something durable for testing.",
+                         "scope": "nope"})
+        self.assertTrue(out.startswith("error:"))
 
     def test_tool_list_returns_markdown_table(self) -> None:
         from mcp.server import tool_list, tool_save  # noqa: E402

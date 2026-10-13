@@ -46,6 +46,14 @@ class RagTest(IsolatedCase):
         third = rag.load_or_build(scope)
         self.assertGreater(len(third.chunks), len(first.chunks))
 
+    def test_touch_retires_cached_index(self) -> None:
+        scope = ScopeStore("project-personal", self.data_home / "mem")
+        seed(scope)
+        rag.load_or_build(scope)
+        self.assertFalse(rag.index_health(scope)["stale"])
+        scope.touch_access("deploy-process.md")
+        self.assertTrue(rag.index_health(scope)["stale"])
+
     def test_delete_invalidates_cached_index(self) -> None:
         scope = ScopeStore("project-personal", self.data_home / "mem")
         seed(scope)

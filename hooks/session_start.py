@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """SessionStart: ensure stores, refresh RAG, inject a short memory digest."""
 
 import sys

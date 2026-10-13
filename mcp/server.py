@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """MCP stdio server exposing memory tools to the agent. Standard library only.
 
 Protocol: newline-delimited JSON-RPC 2.0 over stdio (MCP stdio transport).
@@ -149,12 +149,18 @@ def tool_recall(args: dict) -> str:
 
 
 def tool_save(args: dict) -> str:
-    _cfg, cons, extractor, _rag, MemoryStore = _lazy()
+    config_mod, cons, extractor, _rag, MemoryStore = _lazy()
     text = str(args.get("text", "")).strip()
     if not text:
         return "error: empty text"
     text, secret_kinds = extractor.redact_secrets(text)
-    scope_name = str(args.get("scope", "project-personal"))
+    # An explicit scope always wins; otherwise honor the user's configured
+    # default (same rule as the save CLI), instead of a hardcoded scope.
+    cfg = config_mod.load()
+    scope_name = str(args.get("scope")
+                     or cfg.get("default_scope", "project-personal"))
+    if scope_name not in ("global", "project-personal", "project-shared"):
+        return f"error: unknown scope {scope_name!r}"
     cand = {
         "text": text,
         "kind": "note",

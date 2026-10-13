@@ -13,11 +13,11 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 Write-Host "== muse-memory install ==" -ForegroundColor Cyan
 
-python --version 2>$null
-if ($LASTEXITCODE -ne 0) { throw 'python is required on PATH (3.9+)' }
+python3 --version 2>$null
+if ($LASTEXITCODE -ne 0) { throw 'python3 is required on PATH (3.9+). Install it via `winget install -e --id Python.Python.3` or the Microsoft Store (which provides the python3 alias), then re-run.' }
 
 Write-Host '[1/4] Running tests...'
-python -m unittest discover -s (Join-Path $root 'tests')
+python3 -m unittest discover -s (Join-Path $root 'tests')
 if ($LASTEXITCODE -ne 0) { throw 'tests failed, aborting install' }
 
 Write-Host '[2/4] Validating plugin...'
@@ -39,7 +39,7 @@ if (-not $CliOnly) {
 
 Write-Host '[4/4] Seeding memory stores...'
 $env:PYTHONPATH = $root
-python -m muse_memory init
-python -m muse_memory stats
+python3 -m muse_memory init
+python3 -m muse_memory stats
 
 Write-Host 'Done. Restart muse to load hooks. Try /recall, /remember, /consolidate.' -ForegroundColor Green

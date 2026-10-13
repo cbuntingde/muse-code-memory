@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """PostToolUse: observe tool results, queue memory candidates (silent)."""
 
 import sys

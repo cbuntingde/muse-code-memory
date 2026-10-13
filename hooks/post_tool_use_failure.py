@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """PostToolUseFailure: capture error patterns as gotcha candidates (silent)."""
 
 import sys

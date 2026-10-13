@@ -44,22 +44,72 @@ def similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
-def dedupe_scope(store: ScopeStore, threshold: float = 0.85) -> dict:
+# Shared SequenceMatcher budget for one maintenance run: caps worst-case
+# cleanup cost so SessionEnd stays inside its hook timeout. Exhaustion is
+# always safe-direction (content is kept, merges are skipped) and reported
+# via comparisons_capped. Filing (file_candidate) never takes a budget:
+# it must not silently skip or duplicate memories.
+SIMILARITY_BUDGET = 40000
+
+
+class SimilarityBudget:
+    """Deterministic cap on similarity() calls; exhausted reads as dissimilar."""
+
+    def __init__(self, limit: int = SIMILARITY_BUDGET) -> None:
+        self.limit = limit
+        self.used = 0
+        self.exhausted = False
+
+    def score(self, a: str, b: str) -> float | None:
+        """similarity(a, b), or None once the budget is spent (keep content)."""
+        if self.used >= self.limit:
+            self.exhausted = True
+            return None
+        self.used += 1
+        return similarity(a, b)
+
+
+def dedupe_scope(store: ScopeStore, threshold: float = 0.85,
+                 budget: SimilarityBudget | None = None) -> dict:
     """Remove near-duplicate bullets, keeping the copy in the most important file."""
     records = sorted(store.read_all(), key=lambda r: (-r.importance, r.file))
     seen: list[str] = []
+    seen_exact: set[str] = set()
     removed = 0
+    capped = False
     for rec in records:
+        if budget is not None and budget.exhausted:
+            capped = True
+            break
         kept: list[str] = []
         changed = False
         for line in rec.content.splitlines():
             s = line.strip()
             if s.startswith(BULLET_PREFIXES) and len(s) > 4:
-                if any(similarity(s, prev) >= threshold for prev in seen):
+                if s in seen_exact:
+                    removed += 1
+                    changed = True
+                    continue
+                duplicate = False
+                for prev in seen:
+                    if budget is None:
+                        if similarity(s, prev) >= threshold:
+                            duplicate = True
+                            break
+                    else:
+                        sim = budget.score(s, prev)
+                        if sim is None:
+                            capped = True
+                            break
+                        if sim >= threshold:
+                            duplicate = True
+                            break
+                if duplicate:
                     removed += 1
                     changed = True
                     continue
                 seen.append(s)
+                seen_exact.add(s)
             kept.append(line)
         if changed:
             target = store.dir / rec.file
@@ -69,15 +119,29 @@ def dedupe_scope(store: ScopeStore, threshold: float = 0.85) -> dict:
             store.set_file_meta(rec.file, updated=time.time())
     if removed:
         store.refresh_index()
-    return {"scope": store.scope, "bullets_removed": removed}
+    return {"scope": store.scope, "bullets_removed": removed,
+            "comparisons_capped": capped}
 
 
-def merge_scope(store: ScopeStore, threshold: float = 0.72) -> dict:
+def merge_scope(store: ScopeStore, threshold: float = 0.72,
+                 budget: SimilarityBudget | None = None) -> dict:
     """Fold whole topics into a sibling when their bodies are highly similar."""
     records = store.read_all()
     merged = 0
+    capped = False
     consumed: set[str] = set()
+
+    def _score(a: str, b: str, cutoff: float) -> bool | None:
+        """True/False on a similarity cutoff, None when the budget is spent."""
+        if budget is None:
+            return similarity(a, b) >= cutoff
+        sim = budget.score(a, b)
+        return None if sim is None else sim >= cutoff
+
     for i, rec in enumerate(records):
+        if budget is not None and budget.exhausted:
+            capped = True
+            break
         if rec.file in consumed:
             continue
         for other in records[i + 1:]:
@@ -85,15 +149,34 @@ def merge_scope(store: ScopeStore, threshold: float = 0.72) -> dict:
                 continue
             if not rec.content.strip() or not other.content.strip():
                 continue
-            if similarity(rec.content[:2000], other.content[:2000]) < threshold:
+            pair = _score(rec.content[:2000], other.content[:2000], threshold)
+            if pair is None:
+                capped = True
+                break
+            if not pair:
                 continue
             # Keep the more important / larger file, append the other's unique bullets.
             keep, drop = (rec, other) if (
                 rec.importance, len(rec.content)) >= (other.importance, len(other.content)) \
                 else (other, rec)
             keep_bullets = _bullets(keep.content)
-            additions = [b for b in _bullets(drop.content)
-                         if not any(similarity(b, k) >= 0.85 for k in keep_bullets)]
+            additions = []
+            for b in _bullets(drop.content):
+                unique = True
+                for k in keep_bullets:
+                    known = _score(b, k, 0.85)
+                    if known is None:
+                        capped = True
+                        break
+                    if known:
+                        unique = False
+                        break
+                if capped:
+                    break
+                if unique:
+                    additions.append(b)
+            if capped:
+                break  # budget spent mid-merge: skip it, keep both topics
             if additions:
                 store.append_to_topic(keep.file, "\n".join(additions))
             meta_keep = store.file_meta(keep.file)
@@ -108,7 +191,8 @@ def merge_scope(store: ScopeStore, threshold: float = 0.72) -> dict:
             store.archive_topic(drop.file)
             consumed.add(drop.file)
             merged += 1
-    return {"scope": store.scope, "topics_merged": merged}
+    return {"scope": store.scope, "topics_merged": merged,
+            "comparisons_capped": capped}
 
 
 def expire_scope(store: ScopeStore, stale_days: int = 90,
@@ -179,8 +263,16 @@ def enforce_file_cap(store: ScopeStore, max_files: int = 40) -> dict:
 
 
 def file_candidate(cand: dict, store: MemoryStore,
-                   dedupe_threshold: float = 0.85) -> dict:
-    """File one candidate: skip if duplicate, append if near-match, else create/append topic."""
+                   dedupe_threshold: float = 0.85,
+                   records: dict[str, list[MemoryRecord]] | None = None,
+                   ) -> dict:
+    """File one candidate: skip if duplicate, append if near-match, else create/append topic.
+
+    records is an optional per-scope mirror (scope name -> records) shared
+    across a batch: each scope is read from disk at most once and the
+    mirror is updated on append/create, so filing N candidates costs one
+    scan per scope instead of N. Callers filing a single candidate omit it.
+    """
     scope = store.get_scope(cand.get("scope", "project-personal"))
     if scope is None:
         scope = store.get_scope("project-personal") or next(iter(store.scopes.values()))
@@ -191,8 +283,15 @@ def file_candidate(cand: dict, store: MemoryStore,
     cand = {**cand, "text": clean_text, "topic": clean_topic}
     bullet = candidate_to_bullet(cand)
     text = cand["text"]
+    if records is not None:
+        scanned = records.get(scope.scope)
+        if scanned is None:
+            scanned = scope.read_all()
+            records[scope.scope] = scanned
+    else:
+        scanned = scope.read_all()
     # 1. Exact/near duplicate anywhere in scope -> skip (but refresh access).
-    for rec in scope.read_all():
+    for rec in scanned:
         if text.strip().lower() in rec.content.lower():
             scope.touch_access(rec.file)
             return {"action": "duplicate", "file": rec.file, "scope": scope.scope}
@@ -203,7 +302,7 @@ def file_candidate(cand: dict, store: MemoryStore,
     # 2. Near-match topic -> append.
     best: MemoryRecord | None = None
     best_score = 0.0
-    for rec in scope.read_all():
+    for rec in scanned:
         score = similarity(rec.title + " " + summary_of(rec.content, 200),
                            cand.get("topic", "") + " " + text[:200])
         if score > best_score:
@@ -212,6 +311,8 @@ def file_candidate(cand: dict, store: MemoryStore,
     if best is not None and best_score >= 0.45:
         scope.append_to_topic(best.file, bullet)
         scope.touch_access(best.file)
+        if records is not None:
+            best.content = best.content.rstrip() + "\n\n" + bullet + "\n"
         return {"action": "appended", "file": best.file, "scope": scope.scope}
     # 3. New topic file.
     topic = cand.get("topic", "note") or "note"
@@ -223,6 +324,8 @@ def file_candidate(cand: dict, store: MemoryStore,
         "source": cand.get("source", "auto"),
         "session_id": cand.get("session_id", ""),
     })
+    if records is not None:
+        records.setdefault(scope.scope, []).append(record)
     return {"action": "created", "file": record.file, "scope": scope.scope}
 
 
@@ -230,9 +333,11 @@ def consolidate_session(candidates: list[dict], store: MemoryStore,
                         dedupe_threshold: float = 0.85) -> dict:
     actions: dict[str, int] = {}
     files: list[str] = []
+    mirror: dict[str, list[MemoryRecord]] = {}
     for cand in candidates:
         try:
-            result = file_candidate(cand, store, dedupe_threshold)
+            result = file_candidate(cand, store, dedupe_threshold,
+                                    records=mirror)
         except OSError:
             continue
         actions[result["action"]] = actions.get(result["action"], 0) + 1
@@ -243,14 +348,22 @@ def consolidate_session(candidates: list[dict], store: MemoryStore,
 def cleanup(store: MemoryStore, cfg: dict | None = None) -> dict:
     """Full maintenance pass across scopes; returns a report dict."""
     cfg = cfg or {}
+    budget = SimilarityBudget()
     report: dict[str, dict] = {}
     for scope in store.scopes.values():
+        dedupe_rep = dedupe_scope(scope, float(cfg.get("dedupe_threshold", 0.85)),
+                                  budget=budget)
+        merge_rep = merge_scope(scope, float(cfg.get("merge_threshold", 0.72)),
+                                budget=budget)
+        capped = bool(dedupe_rep.pop("comparisons_capped", False)
+                      or merge_rep.pop("comparisons_capped", False))
         report[scope.scope] = {
-            **dedupe_scope(scope, float(cfg.get("dedupe_threshold", 0.85))),
-            **merge_scope(scope, float(cfg.get("merge_threshold", 0.72))),
+            **dedupe_rep,
+            **merge_rep,
             **expire_scope(scope, int(cfg.get("stale_days", 90))),
             **trim_scope(scope, int(cfg.get("max_chars_per_file", 12000))),
             **enforce_file_cap(scope, int(cfg.get("max_files_per_scope", 40))),
+            "comparisons_capped": capped,
         }
     # Drop the cached RAG indexes so the next recall rebuilds from cleaned files.
     for scope in store.scopes.values():
@@ -259,7 +372,3 @@ def cleanup(store: MemoryStore, cfg: dict | None = None) -> dict:
         except OSError:
             pass
     return report
-
-
-def pending_path(scope: ScopeStore) -> Path:
-    return scope.dir / paths.PENDING_FILE

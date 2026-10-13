@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from helpers import ROOT, IsolatedCase  # noqa: E402
 from muse_memory import consolidate as cons  # noqa: E402
 from muse_memory import lifecycle, rag  # noqa: E402
-from muse_memory.__main__ import (cmd_archive, cmd_config, cmd_doctor, cmd_export,  # noqa: E402
+from muse_memory.__main__ import (cmd_archive, cmd_cleanup, cmd_config,  # noqa: E402
+                                  cmd_doctor, cmd_export,
                                   cmd_forget, cmd_import, cmd_pending, cmd_pin,
                                   cmd_recall, cmd_stats, cmd_unpin)
 from muse_memory.store import MemoryStore, ScopeStore  # noqa: E402
@@ -211,6 +212,26 @@ class ExportImportTest(IsolatedCase):
                  for p in scope.topic_files()}
         self.assertEqual(before, after)
 
+    def test_import_redacts_secrets(self) -> None:
+        store = _seed(self.work)
+        bundle = str(Path(self.tmp.name) / "bundle.md")
+        Path(bundle).write_text(
+            "<<<< MEMORY-SCOPE: project-personal >>>>\n"
+            "<<<< MEMORY-FILE: leak.md >>>>\n"
+            "# Leak\n\n- deploy password: fak3secretvalue\n",
+            encoding="utf-8")
+        code, out = _run(cmd_import, cwd=str(self.work), scopes=None,
+                         bundle=bundle, scope=None, force=False)
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertTrue(report["imported"])
+        self.assertTrue(report["redacted"])
+        scope = store.get_scope("project-personal")
+        assert scope is not None
+        body = (scope.dir / "leak.md").read_text(encoding="utf-8")
+        self.assertNotIn("fak3secretvalue", body)
+        self.assertIn("[redacted:", body)
+
     def test_import_restores_metadata(self) -> None:
         store = _seed(self.work)
         bundle = str(Path(self.tmp.name) / "bundle.md")
@@ -251,6 +272,23 @@ class ExportImportTest(IsolatedCase):
                          scope="global", output=bundle)
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["scopes"], ["global"])
+
+
+class CleanupOutputTest(IsolatedCase):
+    def test_cleanup_text_output(self) -> None:
+        _seed(self.work)
+        code, out = _run(cmd_cleanup, cwd=str(self.work), scopes=None,
+                         json=False)
+        self.assertEqual(code, 0)
+        self.assertIn("[project-personal]", out)
+
+    def test_cleanup_json_output(self) -> None:
+        _seed(self.work)
+        code, out = _run(cmd_cleanup, cwd=str(self.work), scopes=None,
+                         json=True)
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertIn("project-personal", report)
 
 
 class PinTest(IsolatedCase):

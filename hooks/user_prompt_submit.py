@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """UserPromptSubmit: RAG recall for the submitted prompt, injected as context."""
 
 import sys

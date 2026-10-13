@@ -17,8 +17,8 @@ import json
 import math
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
 
 from . import paths
 from .store import MemoryRecord, ScopeStore, utc_now
@@ -105,6 +105,8 @@ class RagIndex:
         self.source_mtime: float = 0.0
         self._lengths: list[int] = []
         self._tokens: list[list[str]] = []
+        self._title_tokens: list[set[str]] = []
+        self._counters: list[Counter] = []
 
     # -- build ------------------------------------------------------------
     def build(self, records: list[MemoryRecord], source_mtime: float = 0.0) -> None:
@@ -113,6 +115,8 @@ class RagIndex:
             self.chunks.extend(chunk_record(rec))
         self._tokens = [tokenize(c["text"] + " " + c["title"]) for c in self.chunks]
         self._lengths = [len(t) or 1 for t in self._tokens]
+        self._title_tokens = [set(tokenize(c["title"])) for c in self.chunks]
+        self._counters = [Counter(t) for t in self._tokens]
         self.doc_freq = {}
         for toks in self._tokens:
             for term in set(toks):
@@ -123,8 +127,7 @@ class RagIndex:
 
     # -- search -----------------------------------------------------------
     def _bm25(self, query_terms: list[str], idx: int) -> float:
-        from collections import Counter
-        counts = Counter(self._tokens[idx])
+        counts = self._counters[idx]
         length = self._lengths[idx]
         n_docs = len(self.chunks) or 1
         score = 0.0
@@ -137,8 +140,7 @@ class RagIndex:
             denom = tf + K1 * (1 - B + B * length / self.avg_len)
             score += idf * (tf * (K1 + 1)) / denom
         # Title hit bonus: query terms appearing in the title matter for memory recall.
-        title_toks = set(tokenize(self.chunks[idx]["title"]))
-        overlap = len(set(query_terms) & title_toks)
+        overlap = len(set(query_terms) & self._title_tokens[idx])
         if overlap:
             score *= 1 + 0.25 * overlap
         return score
@@ -187,6 +189,8 @@ class RagIndex:
         idx._tokens = [tokenize(c.get("text", "") + " " + c.get("title", ""))
                        for c in idx.chunks]
         idx._lengths = [len(t) or 1 for t in idx._tokens]
+        idx._title_tokens = [set(tokenize(c.get("title", ""))) for c in idx.chunks]
+        idx._counters = [Counter(t) for t in idx._tokens]
         return idx
 
 
@@ -237,6 +241,13 @@ def scope_mtime(store: ScopeStore) -> float:
                 latest = max(latest, p.stat().st_mtime)
             except OSError:
                 continue
+    # The meta sidecar carries importance/access signals baked into the
+    # index at build time: any touch/pin/import must retire the cache,
+    # or behavioral boosts freeze until an unrelated topic file changes.
+    try:
+        latest = max(latest, store.meta_path.stat().st_mtime)
+    except OSError:
+        pass
     return latest
 
 
@@ -303,28 +314,32 @@ def search_all(stores: list[ScopeStore], query: str, top_k: int = 5,
     now = now if now is not None else utc_now()
     per: list[ScoredChunk] = []
     for store in stores:
+        indexes = [load_or_build(store)]
         if include_archive:
-            archived = {r.id for r in store.read_archive()}
-            idx = RagIndex()
-            idx.build(store.read_all() + store.read_archive())
-            for chunk in idx.chunks:
-                chunk["archived"] = chunk["record_id"] in archived
-        else:
-            idx = load_or_build(store)
-        if query.strip():
-            per.extend(idx.search(query, top_k=top_k, min_score=0.0,
-                                  now=now, since=since, until=until))
-        elif ranged:
-            for chunk in idx.chunks:
-                if not _in_range(chunk, since, until):
-                    continue
-                score = _fuse_parts(1.0, chunk, now)["score"]
-                per.append(ScoredChunk(
-                    chunk_id=chunk["chunk_id"], scope=chunk["scope"],
-                    file=chunk["file"], title=chunk["title"],
-                    text=chunk["text"], score=score, lexical=1.0,
-                    importance=int(chunk.get("importance", 3)),
-                    archived=bool(chunk.get("archived", False))))
+            archived_recs = store.read_archive()
+            if archived_recs:
+                # Archive set is small and opt-in: build just it fresh and
+                # keep the cached live index, instead of rebuilding both.
+                aidx = RagIndex()
+                aidx.build(archived_recs)
+                for chunk in aidx.chunks:
+                    chunk["archived"] = True
+                indexes.append(aidx)
+        for idx in indexes:
+            if query.strip():
+                per.extend(idx.search(query, top_k=top_k, min_score=0.0,
+                                      now=now, since=since, until=until))
+            elif ranged:
+                for chunk in idx.chunks:
+                    if not _in_range(chunk, since, until):
+                        continue
+                    score = _fuse_parts(1.0, chunk, now)["score"]
+                    per.append(ScoredChunk(
+                        chunk_id=chunk["chunk_id"], scope=chunk["scope"],
+                        file=chunk["file"], title=chunk["title"],
+                        text=chunk["text"], score=score, lexical=1.0,
+                        importance=int(chunk.get("importance", 3)),
+                        archived=bool(chunk.get("archived", False))))
     if ranged and not per and query.strip():
         return search_all(stores, "", top_k=top_k, min_score=min_score,
                           include_archive=include_archive,
@@ -399,7 +414,3 @@ def format_context(hits: list[ScoredChunk], max_chars: int = 4000,
         parts.append(line)
         used += len(line)
     return "\n".join(parts) + "\n"
-
-
-def scope_data_dir(store: ScopeStore) -> Path:
-    return store.dir

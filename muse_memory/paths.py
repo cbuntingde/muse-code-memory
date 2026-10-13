@@ -29,6 +29,9 @@ SNAPSHOT_PREFIX = ".snapshot-"
 ARCHIVE_DIR = "archive"
 
 _SLUG_CLEAN = re.compile(r"[^A-Za-z0-9]+")
+# Adopted slug dirs are <stem>-<hex-hash>: the suffix guard stops a
+# workspace from claiming a sibling whose stem merely extends its own.
+_HASH_SUFFIX_RE = re.compile(r"[0-9a-f]{8,}$", re.IGNORECASE)
 _HASH_LEN = 12
 
 
@@ -209,7 +212,8 @@ def slug_for(cwd: str | os.PathLike | None = None) -> str:
                 return name
         stem_low = stem.lower()
         for name in names:
-            if name.lower().startswith(stem_low + "-"):
+            if name.lower().startswith(stem_low + "-") and _HASH_SUFFIX_RE.fullmatch(
+                    name.lower()[len(stem_low) + 1:]):
                 return name
     return f"{stem}-{digest}"
 

@@ -36,6 +36,14 @@ class PathsTest(IsolatedCase):
         native.mkdir(parents=True)
         self.assertEqual(paths.slug_for(self.work), native.name)
 
+    def test_slug_rejects_sibling_stem_dir(self) -> None:
+        stem = paths.slug_for(self.work).rsplit("-", 1)[0]
+        sibling = paths.projects_root() / f"{stem}-extra-deadbeef00"
+        sibling.mkdir(parents=True)
+        slug = paths.slug_for(self.work)
+        self.assertNotEqual(slug, sibling.name)
+        self.assertTrue(slug.startswith(stem + "-"))
+
     def test_home_dir_absolute_with_cleared_home_env(self) -> None:
         """Regression: cleared home env must never yield a relative '~'."""
         for var in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",

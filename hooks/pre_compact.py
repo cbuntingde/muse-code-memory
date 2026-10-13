@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """PreCompact: snapshot current memory state so context survives compaction."""
 
 import sys

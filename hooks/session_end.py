@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """SessionEnd: mine transcript, file pending, dedupe/merge/expire/trim.
 
 Observational by design (Muse ignores SessionEnd output); all work is local.

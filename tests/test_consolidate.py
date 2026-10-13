@@ -27,6 +27,46 @@ class ConsolidateTest(IsolatedCase):
         r2 = cons.file_candidate(cand("Always run the full test suite."), store)
         self.assertEqual(r2["action"], "duplicate")
 
+    def test_similarity_budget_keeps_content_when_spent(self) -> None:
+        scope = ScopeStore("global", self.data_home / "mem")
+        for i in range(4):
+            scope.write_topic(f"bulk-{i}", f"# Bulk {i}\n\n- shared wording {i}\n")
+        before = {p.name: p.read_text(encoding="utf-8")
+                  for p in scope.topic_files()}
+        spent = cons.SimilarityBudget(limit=0)
+        dedupe_rep = cons.dedupe_scope(scope, threshold=0.8, budget=spent)
+        self.assertTrue(dedupe_rep["comparisons_capped"])
+        self.assertEqual(dedupe_rep["bullets_removed"], 0)
+        merge_rep = cons.merge_scope(scope, threshold=0.5,
+                                     budget=cons.SimilarityBudget(limit=0))
+        self.assertTrue(merge_rep["comparisons_capped"])
+        self.assertEqual(merge_rep["topics_merged"], 0)
+        after = {p.name: p.read_text(encoding="utf-8")
+                 for p in scope.topic_files()}
+        self.assertEqual(before, after)
+
+    def test_batch_filing_shares_one_mirror(self) -> None:
+        store = MemoryStore(self.work)
+        store.ensure_all()
+        seen: list = []
+        orig = cons.file_candidate
+
+        def spy(cand, st, threshold=0.85, records=None):
+            seen.append(records)
+            return orig(cand, st, threshold, records=records)
+
+        cons.file_candidate = spy  # type: ignore[assignment]
+        try:
+            cands = [cand(f"Unique durable batch fact {i}.", topic=f"batch-{i}")
+                     for i in range(3)]
+            report = cons.consolidate_session(cands, store)
+        finally:
+            cons.file_candidate = orig
+        self.assertEqual(report["candidates"], 3)
+        self.assertEqual(len(seen), 3)
+        self.assertIsNotNone(seen[0])
+        self.assertTrue(all(mirror is seen[0] for mirror in seen))
+
     def test_dedupe_removes_copies(self) -> None:
         scope = ScopeStore("global", self.data_home / "mem")
         scope.write_topic("one", "# One\n\n- Deploy on Fridays only.\n",

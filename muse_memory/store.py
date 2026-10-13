@@ -181,6 +181,8 @@ class ScopeStore:
         self.meta_path = directory / paths.META_FILE
         self._meta: dict[str, dict] = {}
         self._meta_loaded = False
+        self._dirty_updates: set[str] = set()
+        self._dirty_deletes: set[str] = set()
 
     # -- setup ------------------------------------------------------------
     def ensure(self, index_title: str = "Memory") -> None:
@@ -210,8 +212,23 @@ class ScopeStore:
     def _save_meta(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         tmp = self.meta_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self._meta, indent=1), encoding="utf-8")
+        try:
+            disk = json.loads(self.meta_path.read_text(encoding="utf-8"))
+            if not isinstance(disk, dict):
+                disk = {}
+        except (OSError, ValueError):
+            disk = {}
+        for filename in self._dirty_deletes:
+            disk.pop(filename, None)
+        for filename in self._dirty_updates:
+            if filename in self._meta:
+                disk[filename] = self._meta[filename]
+        self._dirty_updates.clear()
+        self._dirty_deletes.clear()
+        tmp.write_text(json.dumps(disk, indent=1), encoding="utf-8")
         os.replace(tmp, self.meta_path)
+        self._meta = {k: v for k, v in disk.items() if isinstance(v, dict)}
+        self._meta_loaded = True
 
     def file_meta(self, filename: str) -> dict:
         return self._load_meta().get(filename, {})
@@ -219,6 +236,7 @@ class ScopeStore:
     def set_file_meta(self, filename: str, **fields: object) -> None:
         meta = self._load_meta().setdefault(filename, {})
         meta.update(fields)
+        self._dirty_updates.add(filename)
         self._save_meta()
 
     # -- topic files --------------------------------------------------------
@@ -303,6 +321,7 @@ class ScopeStore:
         if meta:
             merged.update(meta)
         self._load_meta()[filename] = merged
+        self._dirty_updates.add(filename)
         self._save_meta()
         self.refresh_index()
         return self.read_record(target)
@@ -337,6 +356,7 @@ class ScopeStore:
         except OSError:
             return False
         self._load_meta().pop(filename, None)
+        self._dirty_deletes.add(filename)
         self._save_meta()
         self.refresh_index()
         self._invalidate_index()
@@ -353,6 +373,7 @@ class ScopeStore:
         except OSError:
             return False
         self._load_meta().pop(filename, None)
+        self._dirty_deletes.add(filename)
         self._save_meta()
         self.refresh_index()
         self._invalidate_index()

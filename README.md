@@ -18,11 +18,11 @@ captured automatically, recalled with built-in retrieval, and maintained without
 
 Status: `muse skills validate` and `muse plugins validate` both return `valid: true`
 with empty diagnostics. 132 unit/contract tests pass
-(`python -m unittest discover -s tests`).
+(`python3 -m unittest discover -s tests`).
 
 ## Install
 
-Requires Python 3.9+ on `PATH` as `python` (hooks) and `muse` 1.x.
+Requires Python 3.9+ on `PATH` as `python3` (hooks, MCP server) and `muse` 1.x. On Windows, make sure the `python3` alias exists: either install via `winget install -e --id Python.Python.3`, or enable the Microsoft Store "Python" app execution alias (Settings > Apps > Advanced app settings); the python.org installer alone only provides `python`.
 
 ```bash
 muse plugins marketplace add muse-memory https://github.com/cbuntingde/muse-code-memory.git
@@ -108,14 +108,14 @@ Listing never marks topics as used, so browsing cannot poison RAG's use signal.
 
 ```bash
 export PYTHONPATH=/path/to/muse-code-memory   # or pip install -e .
-python -m muse_memory init                    # seed stores + indexes
-python -m muse_memory recall "deploy process" # RAG recall (--explain, --include-archive)
-python -m muse_memory save "We use Postgres" --auto
-python -m muse_memory list --tag decision --min-importance 3 --format markdown
-python -m muse_memory doctor | pending | config   # health, queue, effective config
-python -m muse_memory forget|archive|pin|unpin <scope/file>
-python -m muse_memory export --output bundle.md  # import restores (metadata included)
-python -m muse_memory consolidate | cleanup | stats | reindex | paths
+python3 -m muse_memory init                    # seed stores + indexes
+python3 -m muse_memory recall "deploy process" # RAG recall (--explain, --include-archive)
+python3 -m muse_memory save "We use Postgres" --auto
+python3 -m muse_memory list --tag decision --min-importance 3 --format markdown
+python3 -m muse_memory doctor | pending | config   # health, queue, effective config
+python3 -m muse_memory forget|archive|pin|unpin <scope/file>
+python3 -m muse_memory export --output bundle.md  # import restores (metadata included)
+python3 -m muse_memory consolidate | cleanup | stats | reindex | paths
 ```
 
 `forget` deletes permanently; `archive` retires to `archive/` (excluded from

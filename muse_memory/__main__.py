@@ -1,4 +1,4 @@
-"""`python -m muse_memory` command line interface."""
+"""`python3 -m muse_memory` command line interface."""
 
 from __future__ import annotations
 
@@ -168,7 +168,17 @@ def cmd_cleanup(args) -> int:
     cfg = config_mod.load(args.cwd)
     store = _store(args)
     report = cons.cleanup(store, cfg)
-    print(json.dumps(report, indent=2 if args.json else 2))
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2))
+        return 0
+    for scope_name, info in report.items():
+        actions = ", ".join(
+            f"{key.replace('_', ' ')} {value}"
+            for key, value in sorted(info.items())
+            if isinstance(value, int) and not isinstance(value, bool)
+            and value and key != "scope")
+        capped = " (comparisons capped)" if info.get("comparisons_capped") else ""
+        print(f"[{scope_name}] {actions or 'no changes'}{capped}")
     return 0
 
 
@@ -413,7 +423,8 @@ def cmd_import(args) -> int:
         return 1
     imported: list[str] = []
     skipped: list[str] = []
-    scope_name = override or "project-personal"
+    redacted: list[str] = []
+    scope_name = override or config_mod.load(args.cwd)["default_scope"]
     filename = ""
     buf: list[str] = []
 
@@ -434,6 +445,12 @@ def cmd_import(args) -> int:
             skipped.append(f"{scope_name}/{clean} (exists, use --force)")
             return
         content = "\n".join(buf)
+        # Filing path: scrub like every other capture/filing route so a
+        # bundle can never smuggle secrets into topic files (redaction is
+        # identity for clean text, so honest roundtrips are unaffected).
+        content, secret_kinds = extractor.redact_secrets(content)
+        if secret_kinds:
+            redacted.append(f"{scope_name}/{clean}: {', '.join(secret_kinds)}")
         scope.dir.mkdir(parents=True, exist_ok=True)
         target.write_text(content.rstrip() + "\n", encoding="utf-8")
         now = utc_now()
@@ -456,6 +473,7 @@ def cmd_import(args) -> int:
         if front.get("source"):
             meta["source"] = front["source"]
         scope._load_meta()[clean] = meta
+        scope._dirty_updates.add(clean)
         scope._save_meta()
         imported.append(f"{scope_name}/{clean}")
 
@@ -476,7 +494,8 @@ def cmd_import(args) -> int:
     flush()
     for scope in store.scopes.values():
         scope.refresh_index()
-    print(json.dumps({"imported": imported, "skipped": skipped}))
+    print(json.dumps({"imported": imported, "skipped": skipped,
+                      "redacted": redacted}))
     return 0
 
 

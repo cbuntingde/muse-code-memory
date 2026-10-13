@@ -15,21 +15,35 @@ from .store import MemoryStore
 TRANSCRIPT_TAIL_BYTES = 200_000
 
 
+RECENT_DAY_SCAN_MAX = 60
+
+
 def find_session_file(session_id: str) -> Path | None:
-    """Locate <data>/sessions/YYYY/MM/DD/<session-id>/session.jsonl."""
+    """Locate <data>/sessions/YYYY/MM/DD/<session-id>/session.jsonl.
+
+    Scans day directories newest-first and stops at the first hit, so
+    cost stays bounded no matter how much session history exists. Day
+    segments are zero-padded (YYYY/MM/DD), so lexicographic order is
+    chronological.
+    """
     if not session_id:
         return None
     sessions = paths.muse_data_dir() / "sessions"
     if not sessions.is_dir():
         return None
-    # Direct glob is cheaper than a full walk on Windows.
-    matches = list(sessions.glob(f"*/*/*/{session_id}/session.jsonl"))
-    if matches:
-        return matches[0]
-    # Fallback: session id may be a prefix.
-    for day in sessions.glob("*/*/*"):
-        if not day.is_dir():
+    try:
+        days = sorted((p for p in sessions.glob("*/*/*") if p.is_dir()),
+                      reverse=True)[:RECENT_DAY_SCAN_MAX]
+    except OSError:
+        return None
+    for day in days:
+        exact = day / session_id / "session.jsonl"
+        try:
+            if exact.is_file():
+                return exact
+        except OSError:
             continue
+        # Fallback: session id may be a prefix.
         try:
             children = list(day.iterdir())
         except OSError:
@@ -37,8 +51,11 @@ def find_session_file(session_id: str) -> Path | None:
         for child in children:
             if child.is_dir() and child.name.startswith(session_id):
                 candidate = child / "session.jsonl"
-                if candidate.is_file():
-                    return candidate
+                try:
+                    if candidate.is_file():
+                        return candidate
+                except OSError:
+                    continue
     return None
 
 
@@ -185,13 +202,20 @@ def session_end(cwd: str | os.PathLike | None = None,
     return report
 
 
+# Stop fires after nearly every agent turn: bound one run so it always
+# fits its hook timeout. Leftovers stay queued for the next Stop or the
+# full SessionEnd drain.
+STOP_DRAIN_MAX = 60
+
+
 def stop_checkpoint(cwd: str | os.PathLike | None = None,
                     session_id: str = "") -> dict:
     """Lightweight Stop-hook job: file pending candidates without full cleanup."""
     cfg = config_mod.load(cwd)
     store = MemoryStore(cwd)
     store.ensure_all()
-    candidates = drain_pending(store, int(cfg.get("max_pending", 200)))
+    limit = min(int(cfg.get("max_pending", 200)), STOP_DRAIN_MAX)
+    candidates = drain_pending(store, limit)
     if not candidates:
         return {"filed": 0}
     report = cons.consolidate_session(

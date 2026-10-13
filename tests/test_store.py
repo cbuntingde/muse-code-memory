@@ -38,6 +38,21 @@ class StoreTest(IsolatedCase):
         self.assertEqual(body.count("- one"), 1)
         self.assertIn("- two", body)
 
+    def test_concurrent_meta_writes_merge(self) -> None:
+        import json  # noqa: E402
+
+        scope = ScopeStore("global", self.data_home / "mem")
+        scope.write_topic("a", "# A\n\n- aye\n")
+        scope.write_topic("b", "# B\n\n- bee\n")
+        view_a = ScopeStore("global", self.data_home / "mem")
+        view_b = ScopeStore("global", self.data_home / "mem")
+        view_a.set_file_meta("a.md", importance=5)
+        view_b.set_file_meta("b.md", importance=1)
+        disk = json.loads((scope.dir / ".memory-meta.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(disk["a.md"]["importance"], 5)
+        self.assertEqual(disk["b.md"]["importance"], 1)
+
     def test_archive_and_delete(self) -> None:
         scope = ScopeStore("global", self.data_home / "mem")
         scope.write_topic("gone", "# Gone\n\n- x\n")

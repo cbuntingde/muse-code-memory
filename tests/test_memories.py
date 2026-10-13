@@ -148,6 +148,16 @@ class MemoriesManifestTest(unittest.TestCase):
         self.assertIn("description:", body)
         self.assertIn("argument-hint:", body)
 
+    def test_hooks_and_mcp_use_portable_interpreter(self) -> None:
+        manifest = json.loads(
+            (ROOT / ".muse-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        for hook in manifest["capabilities"]["hooks"]:
+            self.assertEqual(hook["command"][0], "python3", hook["id"])
+            self.assertTrue((ROOT / hook["command"][1]).is_file())
+        for server in manifest["capabilities"]["mcpServers"]:
+            self.assertEqual(server["command"][0], "python3", server["id"])
+            self.assertTrue((ROOT / server["command"][1]).is_file())
+
     def test_marketplace_catalog_valid(self) -> None:
         catalog = json.loads(
             (ROOT / ".agents" / "plugins" / "marketplace.json").read_text(
