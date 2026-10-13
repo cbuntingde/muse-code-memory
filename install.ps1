@@ -33,6 +33,7 @@ if (-not $CliOnly) {
   muse plugins approve muse-memory
   if ($LASTEXITCODE -ne 0) { throw 'plugin approve failed' }
   muse plugins enable muse-memory
+  if ($LASTEXITCODE -ne 0) { throw 'plugin enable failed' }
 } else {
   Write-Host '[3/4] Skipped plugin install (-CliOnly).'
 }
@@ -40,6 +41,8 @@ if (-not $CliOnly) {
 Write-Host '[4/4] Seeding memory stores...'
 $env:PYTHONPATH = $root
 python3 -m muse_memory init
+if ($LASTEXITCODE -ne 0) { throw 'memory initialization failed' }
 python3 -m muse_memory stats
+if ($LASTEXITCODE -ne 0) { throw 'memory statistics failed' }
 
 Write-Host 'Done. Restart muse to load hooks. Try /recall, /remember, /consolidate.' -ForegroundColor Green

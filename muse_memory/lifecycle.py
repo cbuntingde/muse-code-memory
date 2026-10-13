@@ -11,6 +11,7 @@ from . import config as config_mod
 from . import consolidate as cons
 from . import extractor, paths
 from .store import MemoryStore
+from .locking import scope_lock
 
 TRANSCRIPT_TAIL_BYTES = 200_000
 
@@ -130,48 +131,95 @@ def queue_candidates(candidates: Iterable[dict], store: MemoryStore,
         grouped.setdefault(cand.get("scope", "project-personal"), []).append(cand)
     queued = 0
     for scope_name, items in grouped.items():
-        scope = store.get_scope(scope_name) or store.get_scope("project-personal")
+        scope = store.get_scope(scope_name)
         if scope is None:
             continue
-        try:
-            scope.dir.mkdir(parents=True, exist_ok=True)
-            with (scope.dir / paths.PENDING_FILE).open("a", encoding="utf-8") as fh:
-                for cand in items[:max_pending]:
-                    fh.write(json.dumps(cand) + "\n")
-                    queued += 1
-        except OSError:
-            continue
+        with scope_lock(scope.dir):
+            try:
+                scope.dir.mkdir(parents=True, exist_ok=True)
+                capacity = max(0, max_pending - scope.pending_count())
+                with (scope.dir / paths.PENDING_FILE).open("a", encoding="utf-8") as fh:
+                    for cand in items[:capacity]:
+                        fh.write(json.dumps(cand) + "\n")
+                        queued += 1
+            except OSError:
+                continue
     return queued
 
 
 def drain_pending(store: MemoryStore, max_items: int = 200) -> list[dict]:
     out: list[dict] = []
     for scope in store.scopes.values():
-        pending = scope.dir / paths.PENDING_FILE
-        if not pending.is_file():
-            continue
-        try:
-            lines = pending.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in lines[:max_items]:
-            try:
-                cand = json.loads(line)
-            except ValueError:
+        remaining = max_items - len(out)
+        if remaining <= 0:
+            break
+        with scope_lock(scope.dir):
+            pending = scope.dir / paths.PENDING_FILE
+            if not pending.is_file():
                 continue
-            if isinstance(cand, dict) and cand.get("text"):
-                out.append(cand)
-        try:
-            if len(lines) <= max_items:
-                pending.unlink(missing_ok=True)
-            else:
-                pending.write_text("\n".join(lines[max_items:]) + "\n", encoding="utf-8")
-        except OSError:
-            pass
-    return out[:max_items]
+            try:
+                lines = pending.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines[:remaining]:
+                try:
+                    cand = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(cand, dict) and cand.get("text"):
+                    out.append(cand)
+            try:
+                if len(lines) <= remaining:
+                    pending.unlink(missing_ok=True)
+                else:
+                    pending.write_text("\n".join(lines[remaining:]) + "\n", encoding="utf-8")
+            except OSError:
+                pass
+    return out
 
 
 # -- session jobs ---------------------------------------------------------------
+
+
+def file_pending(store: MemoryStore, max_items: int = 200,
+                 dedupe_threshold: float = 0.85, min_importance: int = 1) -> dict:
+    """Acknowledge queued lines only after successful filing; failures stay queued."""
+    actions: dict[str, int] = {}
+    files: list[str] = []
+    attempted = 0
+    for scope in store.scopes.values():
+        if attempted >= max_items:
+            break
+        with scope_lock(scope.dir):
+            pending = scope.dir / paths.PENDING_FILE
+            if not pending.is_file():
+                continue
+            lines = pending.read_text(encoding='utf-8').splitlines()
+            kept: list[str] = []
+            for line in lines:
+                if attempted >= max_items:
+                    kept.append(line)
+                    continue
+                attempted += 1
+                try:
+                    cand = json.loads(line)
+                    if not isinstance(cand, dict) or not isinstance(cand.get('text'), str):
+                        raise ValueError('invalid queued candidate')
+                    if int(cand.get('importance', 3)) < min_importance:
+                        continue
+                    result = cons.file_candidate(cand, store, dedupe_threshold)
+                except (OSError, ValueError, TypeError):
+                    kept.append(line)
+                    continue
+                actions[result['action']] = actions.get(result['action'], 0) + 1
+                files.append(f"{result['scope']}/{result['file']}")
+            if kept:
+                tmp = pending.with_suffix('.tmp')
+                tmp.write_text('\n'.join(kept) + '\n', encoding='utf-8')
+                os.replace(tmp, pending)
+            else:
+                pending.unlink(missing_ok=True)
+    return {'actions': actions, 'files': files, 'candidates': len(files)}
 
 
 def session_end(cwd: str | os.PathLike | None = None,
@@ -183,20 +231,26 @@ def session_end(cwd: str | os.PathLike | None = None,
     report: dict = {"session_id": session_id, "cwd": str(store.cwd)}
 
     candidates: list[dict] = []
-    if cfg.get("session_consolidation", True):
+    if cfg.get("capture_enabled", True) and cfg.get("session_consolidation", True):
         transcript_file = find_session_file(session_id)
         if transcript_file is not None:
             text = tail_transcript_text(transcript_file)
             candidates.extend(extractor.extract_candidates(
                 text, source="session", session_id=session_id,
-                max_candidates=12))
-    candidates.extend(drain_pending(store, int(cfg.get("max_pending", 200))))
+                default_scope=cfg['default_scope'], max_candidates=12))
     # Drop low-value captures when configured.
     min_imp = int(cfg.get("capture_min_importance", 2))
     candidates = [c for c in candidates if int(c.get("importance", 3)) >= min_imp]
 
     report["consolidation"] = cons.consolidate_session(
         candidates, store, float(cfg.get("dedupe_threshold", 0.85)))
+    pending_report = file_pending(store, int(cfg['max_pending']),
+                                  float(cfg['dedupe_threshold']), min_imp)
+    filed = report['consolidation']
+    for action, count in pending_report['actions'].items():
+        filed['actions'][action] = filed['actions'].get(action, 0) + count
+    filed['files'].extend(pending_report['files'])
+    filed['candidates'] += pending_report['candidates']
     if cfg.get("auto_cleanup", True):
         report["cleanup"] = cons.cleanup(store, cfg)
     return report
@@ -215,9 +269,6 @@ def stop_checkpoint(cwd: str | os.PathLike | None = None,
     store = MemoryStore(cwd)
     store.ensure_all()
     limit = min(int(cfg.get("max_pending", 200)), STOP_DRAIN_MAX)
-    candidates = drain_pending(store, limit)
-    if not candidates:
-        return {"filed": 0}
-    report = cons.consolidate_session(
-        candidates, store, float(cfg.get("dedupe_threshold", 0.85)))
+    report = file_pending(store, limit, float(cfg['dedupe_threshold']),
+                          int(cfg['capture_min_importance']))
     return {"filed": report.get("candidates", 0), "actions": report.get("actions", {})}

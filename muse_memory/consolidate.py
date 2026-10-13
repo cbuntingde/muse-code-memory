@@ -14,13 +14,36 @@ from __future__ import annotations
 import difflib
 import time
 from pathlib import Path
+from functools import wraps
 
 from . import paths
+from .locking import scope_lock
 from .extractor import candidate_to_bullet, redact_secrets
 from .store import (MemoryRecord, MemoryStore, ScopeStore, frontmatter_block,
-                      summary_of)
+                   slugify_topic, summary_of)
 
 BULLET_PREFIXES = ("- ", "* ")
+
+
+def _locked_job(method):
+    @wraps(method)
+    def wrapped(store, *args, **kwargs):
+        with scope_lock(store.dir):
+            store._meta_loaded = False
+            return method(store, *args, **kwargs)
+    return wrapped
+
+
+def _locked_filing(method):
+    @wraps(method)
+    def wrapped(cand, store, *args, **kwargs):
+        scope = store.get_scope(cand.get('scope', 'project-personal'))
+        if scope is None:
+            raise ValueError('requested memory scope is unavailable')
+        with scope_lock(scope.dir):
+            scope._meta_loaded = False
+            return method(cand, store, *args, **kwargs)
+    return wrapped
 
 
 def _header_of(target: Path) -> str:
@@ -69,6 +92,7 @@ class SimilarityBudget:
         return similarity(a, b)
 
 
+@_locked_job
 def dedupe_scope(store: ScopeStore, threshold: float = 0.85,
                  budget: SimilarityBudget | None = None) -> dict:
     """Remove near-duplicate bullets, keeping the copy in the most important file."""
@@ -123,6 +147,7 @@ def dedupe_scope(store: ScopeStore, threshold: float = 0.85,
             "comparisons_capped": capped}
 
 
+@_locked_job
 def merge_scope(store: ScopeStore, threshold: float = 0.72,
                  budget: SimilarityBudget | None = None) -> dict:
     """Fold whole topics into a sibling when their bodies are highly similar."""
@@ -142,10 +167,10 @@ def merge_scope(store: ScopeStore, threshold: float = 0.72,
         if budget is not None and budget.exhausted:
             capped = True
             break
-        if rec.file in consumed:
+        if rec.file in consumed or rec.pinned:
             continue
         for other in records[i + 1:]:
-            if other.file in consumed:
+            if other.file in consumed or other.pinned:
                 continue
             if not rec.content.strip() or not other.content.strip():
                 continue
@@ -191,10 +216,15 @@ def merge_scope(store: ScopeStore, threshold: float = 0.72,
             store.archive_topic(drop.file)
             consumed.add(drop.file)
             merged += 1
+            # Do not continue comparing a record that this merge retired.
+            if drop is rec:
+                break
+            rec.content = store.read_record(store.dir / rec.file).content
     return {"scope": store.scope, "topics_merged": merged,
             "comparisons_capped": capped}
 
 
+@_locked_job
 def expire_scope(store: ScopeStore, stale_days: int = 90,
                  now: float | None = None) -> dict:
     """Delete expired topics; archive stale, low-importance, never-recalled ones."""
@@ -202,6 +232,8 @@ def expire_scope(store: ScopeStore, stale_days: int = 90,
     expired = 0
     archived = 0
     for rec in store.read_all():
+        if rec.pinned:
+            continue
         if rec.expires and rec.expires <= now:
             store.delete_topic(rec.file)
             expired += 1
@@ -214,6 +246,7 @@ def expire_scope(store: ScopeStore, stale_days: int = 90,
     return {"scope": store.scope, "expired": expired, "archived": archived}
 
 
+@_locked_job
 def trim_scope(store: ScopeStore, max_chars: int = 12000) -> dict:
     """Shrink oversized topic files, keeping highest-signal content."""
     trimmed = 0
@@ -229,7 +262,10 @@ def trim_scope(store: ScopeStore, max_chars: int = 12000) -> dict:
             total = 0
             for b in keep:
                 if total + len(b) > max_chars - 200:
-                    break
+                    if not buf:
+                        buf.append(b[:max_chars - 200])
+                        total = len(buf[0])
+                    continue
                 buf.append(b)
                 total += len(b)
             body = "\n".join(buf) + "\n"
@@ -246,6 +282,7 @@ def trim_scope(store: ScopeStore, max_chars: int = 12000) -> dict:
 
 
 
+@_locked_job
 def enforce_file_cap(store: ScopeStore, max_files: int = 40) -> dict:
     records = sorted(store.read_all(),
                      key=lambda r: (r.importance, r.access_count, r.updated or 0.0))
@@ -262,6 +299,7 @@ def enforce_file_cap(store: ScopeStore, max_files: int = 40) -> dict:
     return {"scope": store.scope, "retired_for_cap": retired}
 
 
+@_locked_filing
 def file_candidate(cand: dict, store: MemoryStore,
                    dedupe_threshold: float = 0.85,
                    records: dict[str, list[MemoryRecord]] | None = None,
@@ -316,6 +354,15 @@ def file_candidate(cand: dict, store: MemoryStore,
         return {"action": "appended", "file": best.file, "scope": scope.scope}
     # 3. New topic file.
     topic = cand.get("topic", "note") or "note"
+    filename = slugify_topic(topic) + ".md"
+    if (scope.dir / filename).is_file():
+        scope.append_to_topic(filename, bullet)
+        if records is not None:
+            for existing in scanned:
+                if existing.file == filename:
+                    existing.content = scope.read_record(scope.dir / filename).content
+                    break
+        return {"action": "appended", "file": filename, "scope": scope.scope}
     title = topic.replace("-", " ").title()
     body = f"# {title}\n\n{bullet}\n"
     record = scope.write_topic(topic, body, meta={
@@ -333,16 +380,19 @@ def consolidate_session(candidates: list[dict], store: MemoryStore,
                         dedupe_threshold: float = 0.85) -> dict:
     actions: dict[str, int] = {}
     files: list[str] = []
+    errors: list[str] = []
     mirror: dict[str, list[MemoryRecord]] = {}
     for cand in candidates:
         try:
             result = file_candidate(cand, store, dedupe_threshold,
                                     records=mirror)
-        except OSError:
+        except (OSError, ValueError, TypeError) as exc:
+            errors.append(str(exc))
             continue
         actions[result["action"]] = actions.get(result["action"], 0) + 1
         files.append(f"{result['scope']}/{result['file']}")
-    return {"actions": actions, "files": files, "candidates": len(candidates)}
+    return {"actions": actions, "files": files, "candidates": len(files),
+            "errors": errors}
 
 
 def cleanup(store: MemoryStore, cfg: dict | None = None) -> dict:

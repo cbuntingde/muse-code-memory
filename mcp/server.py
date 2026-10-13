@@ -150,7 +150,15 @@ def tool_recall(args: dict) -> str:
 
 def tool_save(args: dict) -> str:
     config_mod, cons, extractor, _rag, MemoryStore = _lazy()
-    text = str(args.get("text", "")).strip()
+    if not isinstance(args.get('text'), str):
+        return 'error: text must be a string'
+    importance = args.get('importance', 3)
+    if type(importance) is not int or not 1 <= importance <= 5:
+        return 'error: importance must be an integer from 1 to 5'
+    tags = args.get('tags', [])
+    if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+        return 'error: tags must be an array of strings'
+    text = args['text'].strip()
     if not text:
         return "error: empty text"
     text, secret_kinds = extractor.redact_secrets(text)
@@ -253,6 +261,11 @@ def serve() -> None:
             continue
         method = req.get("method", "")
         req_id = req.get("id")
+        if not isinstance(method, str):
+            respond(req_id, error={"code": -32600, "message": "method must be a string"})
+            continue
+        if "id" not in req:
+            continue
         if method.startswith("notifications/"):
             continue
         try:
@@ -274,7 +287,8 @@ def serve() -> None:
                                            "message": f"unknown tool: {name}"})
                 else:
                     text = handler(args if isinstance(args, dict) else {})
-                    respond(req_id, {"content": [{"type": "text",
+                    respond(req_id, {"isError": text.startswith("error:"),
+                                     "content": [{"type": "text",
                                                   "text": text}]})
             elif method == "ping":
                 respond(req_id, {})

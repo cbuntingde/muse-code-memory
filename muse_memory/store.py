@@ -19,10 +19,22 @@ import json
 import os
 import re
 import time
+from functools import wraps
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import paths
+from .locking import scope_lock
+
+
+def _serialized(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with scope_lock(self.dir):
+            if not self._dirty_updates and not self._dirty_deletes:
+                self._meta_loaded = False
+            return method(self, *args, **kwargs)
+    return wrapped
 
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 HEADING_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
@@ -223,16 +235,17 @@ class ScopeStore:
         for filename in self._dirty_updates:
             if filename in self._meta:
                 disk[filename] = self._meta[filename]
-        self._dirty_updates.clear()
-        self._dirty_deletes.clear()
         tmp.write_text(json.dumps(disk, indent=1), encoding="utf-8")
         os.replace(tmp, self.meta_path)
+        self._dirty_updates.clear()
+        self._dirty_deletes.clear()
         self._meta = {k: v for k, v in disk.items() if isinstance(v, dict)}
         self._meta_loaded = True
 
     def file_meta(self, filename: str) -> dict:
         return self._load_meta().get(filename, {})
 
+    @_serialized
     def set_file_meta(self, filename: str, **fields: object) -> None:
         meta = self._load_meta().setdefault(filename, {})
         meta.update(fields)
@@ -262,10 +275,11 @@ class ScopeStore:
         except OSError:
             text = ""
         _, body = split_frontmatter(text)
-        meta = self.file_meta(path.name)
+        meta_key = path.relative_to(self.dir).as_posix()
+        meta = self.file_meta(meta_key)
         stat_updated = path.stat().st_mtime if path.exists() else utc_now()
         return MemoryRecord(
-            id=self.record_id(path.name),
+            id=self.record_id(meta_key),
             scope=self.scope,
             file=path.name,
             title=str(meta.get("title") or title_of(body, path.stem)),
@@ -299,6 +313,7 @@ class ScopeStore:
                 out.append(rec)
         return out
 
+    @_serialized
     def write_topic(self, topic: str, body: str, meta: dict | None = None) -> MemoryRecord:
         """Create or replace a topic file; returns the stored record."""
         self.ensure()
@@ -326,6 +341,7 @@ class ScopeStore:
         self.refresh_index()
         return self.read_record(target)
 
+    @_serialized
     def append_to_topic(self, filename: str, addition: str) -> MemoryRecord | None:
         target = self.dir / filename
         if not target.is_file():
@@ -349,6 +365,7 @@ class ScopeStore:
         except OSError:
             pass
 
+    @_serialized
     def delete_topic(self, filename: str) -> bool:
         target = self.dir / filename
         try:
@@ -362,16 +379,23 @@ class ScopeStore:
         self._invalidate_index()
         return True
 
+    @_serialized
     def archive_topic(self, filename: str) -> bool:
         src = self.dir / filename
         if not src.is_file():
             return False
         dest_dir = self.dir / paths.ARCHIVE_DIR
         dest_dir.mkdir(parents=True, exist_ok=True)
+        destination = dest_dir / filename
+        if destination.exists():
+            destination = dest_dir / f"{src.stem}-{time.time_ns()}{src.suffix}"
         try:
-            src.rename(dest_dir / filename)
+            src.rename(destination)
         except OSError:
             return False
+        archived_key = destination.relative_to(self.dir).as_posix()
+        self._load_meta()[archived_key] = dict(self.file_meta(filename))
+        self._dirty_updates.add(archived_key)
         self._load_meta().pop(filename, None)
         self._dirty_deletes.add(filename)
         self._save_meta()
@@ -379,6 +403,7 @@ class ScopeStore:
         self._invalidate_index()
         return True
 
+    @_serialized
     def touch_access(self, filename: str) -> None:
         meta = self.file_meta(filename)
         self.set_file_meta(
@@ -410,6 +435,7 @@ class ScopeStore:
             return 0
 
     # -- index ---------------------------------------------------------------
+    @_serialized
     def refresh_index(self) -> None:
         """Rewrite MEMORY.md preserving its heading/frontmatter.
 
@@ -484,7 +510,8 @@ class MemoryStore:
     def __init__(self, cwd: str | os.PathLike | None = None,
                  scopes: list[str] | None = None):
         self.cwd = paths.canonical_cwd(cwd)
-        wanted = scopes or ["global", "project-personal", "project-shared"]
+        from . import config
+        wanted = config.load(self.cwd)['scopes'] if scopes is None else scopes
         dirs = paths.all_scope_dirs(self.cwd)
         self.scopes: dict[str, ScopeStore] = {}
         for name in wanted:

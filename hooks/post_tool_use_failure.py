@@ -29,6 +29,7 @@ def main(event: dict) -> None:
     candidates = extractor.extract_candidates(
         text, source="tool-failure",
         session_id=str(event.get("session_id", "")),
+        default_scope=cfg['default_scope'],
         max_candidates=3)
     if not candidates:
         # Fall back to a compact raw error note so failures are not lost.
@@ -37,7 +38,7 @@ def main(event: dict) -> None:
         candidates = [{"text": first, "kind": "gotcha",
                        "topic": extractor.suggest_topic(first, "gotcha"),
                        "importance": 3, "tags": ["gotcha"],
-                       "scope": "project-personal", "source": "tool-failure",
+                       "scope": cfg['default_scope'], "source": "tool-failure",
                        "session_id": str(event.get("session_id", ""))}]
     lifecycle.queue_candidates(candidates, MemoryStore(cwd),
                                int(cfg.get("max_pending", 200)))

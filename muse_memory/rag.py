@@ -14,6 +14,7 @@ memory notes; an optional embeddings backend can be layered later.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -21,6 +22,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from . import paths
+from .locking import scope_lock
 from .store import MemoryRecord, ScopeStore, utc_now
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -57,6 +59,13 @@ def chunk_record(rec: MemoryRecord, max_chars: int = 1200) -> list[dict]:
         paras = [p.strip() for p in section.split("\n\n") if p.strip()]
         buf = ""
         for para in paras:
+            if len(para) > max_chars:
+                if buf:
+                    chunks.append(buf)
+                    buf = ""
+                chunks.extend(para[i:i + max_chars]
+                              for i in range(0, len(para), max_chars))
+                continue
             if len(buf) + len(para) + 2 <= max_chars:
                 buf = (buf + "\n\n" + para).strip()
             else:
@@ -103,6 +112,7 @@ class RagIndex:
         self.avg_len: float = 1.0
         self.built_at: float = 0.0
         self.source_mtime: float = 0.0
+        self.source_signature: str = ''
         self._lengths: list[int] = []
         self._tokens: list[list[str]] = []
         self._title_tokens: list[set[str]] = []
@@ -176,7 +186,8 @@ class RagIndex:
     def to_dict(self) -> dict:
         return {"chunks": self.chunks, "doc_freq": self.doc_freq,
                 "avg_len": self.avg_len, "built_at": self.built_at,
-                "source_mtime": self.source_mtime}
+                "source_mtime": self.source_mtime,
+                "source_signature": self.source_signature}
 
     @classmethod
     def from_dict(cls, data: dict) -> "RagIndex":
@@ -186,6 +197,7 @@ class RagIndex:
         idx.avg_len = data.get("avg_len", 1.0) or 1.0
         idx.built_at = data.get("built_at", 0.0)
         idx.source_mtime = data.get("source_mtime", 0.0)
+        idx.source_signature = data.get('source_signature', '')
         idx._tokens = [tokenize(c.get("text", "") + " " + c.get("title", ""))
                        for c in idx.chunks]
         idx._lengths = [len(t) or 1 for t in idx._tokens]
@@ -255,24 +267,41 @@ def load_or_build(store: ScopeStore, force: bool = False) -> RagIndex:
     """Load a cached scope index, rebuilding when topic files changed."""
     index_path = store.dir / paths.RAG_INDEX
     mtime = scope_mtime(store)
+    signature = scope_signature(store)
     if not force and index_path.is_file():
         try:
             data = json.loads(index_path.read_text(encoding="utf-8"))
             idx = RagIndex.from_dict(data)
-            if idx.source_mtime >= mtime:
+            if idx.source_signature == signature:
                 return idx
         except (OSError, ValueError, TypeError, AttributeError):
             pass  # corrupt cache: fall through and rebuild from disk
     idx = RagIndex()
     idx.build(store.read_all(), source_mtime=mtime or utc_now())
+    idx.source_signature = signature
     try:
-        store.dir.mkdir(parents=True, exist_ok=True)
-        tmp = index_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(idx.to_dict()), encoding="utf-8")
-        os.replace(tmp, index_path)
+        with scope_lock(store.dir):
+            # Another writer may have changed source files during this build.
+            if scope_signature(store) != signature:
+                return load_or_build(store, force=True)
+            tmp = index_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(idx.to_dict()), encoding="utf-8")
+            os.replace(tmp, index_path)
     except OSError:
         pass
     return idx
+
+
+def scope_signature(store: ScopeStore) -> str:
+    """Detect deletion and same-timestamp changes as well as newer files."""
+    state = []
+    for path in store.topic_files() + [store.meta_path]:
+        try:
+            stat = path.stat()
+            state.append((path.name, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            continue
+    return hashlib.sha256(json.dumps(state).encode('utf-8')).hexdigest()
 
 
 def index_health(store: ScopeStore) -> dict:
@@ -287,10 +316,10 @@ def index_health(store: ScopeStore) -> dict:
     try:
         data = json.loads(index_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or not isinstance(
-                data.get("chunks", []), list):
+                data.get("chunks"), list):
             raise ValueError("misshapen index")
         chunks = data["chunks"]
-        stale = float(data.get("source_mtime", 0.0)) < scope_mtime(store)
+        stale = data.get('source_signature') != scope_signature(store)
     except (OSError, ValueError, TypeError):
         return {"indexed": False, "chunks": 0, "stale": True}
     return {"indexed": True, "chunks": len(chunks), "stale": stale}

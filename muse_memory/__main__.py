@@ -111,9 +111,11 @@ def cmd_save(args) -> int:
         report = cons.consolidate_session(cands, store)
         report["redacted"] = secret_kinds
         print(json.dumps(report, indent=2))
-        return 0
-    scope = store.get_scope(scope_name) or store.get_scope("project-personal")
-    assert scope is not None
+        return 1 if report.get('errors') else 0
+    scope = store.get_scope(scope_name)
+    if scope is None:
+        print(json.dumps({"error": f"unavailable scope: {scope_name}"}))
+        return 1
     record = scope.write_topic(args.topic or extractor.suggest_topic(text, "note"),
                                f"# {(args.topic or 'Note').replace('-', ' ').title()}\n\n"
                                f"- {text.strip()}\n",
@@ -157,11 +159,13 @@ def cmd_consolidate(args) -> int:
         cands = extractor.extract_candidates(args.text, source="manual",
                                              max_candidates=20)
     else:
-        cands = lifecycle.drain_pending(store)
-    report = cons.consolidate_session(cands, store,
-                                      float(cfg.get("dedupe_threshold", 0.85)))
+        report = lifecycle.file_pending(store, int(cfg['max_pending']),
+                                         float(cfg['dedupe_threshold']))
+        print(json.dumps(report, indent=2))
+        return 0
+    report = cons.consolidate_session(cands, store, float(cfg['dedupe_threshold']))
     print(json.dumps(report, indent=2))
-    return 0
+    return 1 if report.get('errors') else 0
 
 
 def cmd_cleanup(args) -> int:
@@ -328,7 +332,9 @@ def cmd_forget(args) -> int:
         print(json.dumps({"error": error}))
         return 1
     assert scope is not None
-    scope.delete_topic(filename)
+    if not scope.delete_topic(filename):
+        print(json.dumps({"error": "topic could not be deleted"}))
+        return 1
     print(json.dumps({"action": "deleted", "scope": scope.scope,
                       "file": filename}))
     return 0
@@ -341,7 +347,9 @@ def cmd_archive(args) -> int:
         print(json.dumps({"error": error}))
         return 1
     assert scope is not None
-    scope.archive_topic(filename)
+    if not scope.archive_topic(filename):
+        print(json.dumps({"error": "topic could not be archived"}))
+        return 1
     print(json.dumps({"action": "archived", "scope": scope.scope,
                       "file": filename}))
     return 0

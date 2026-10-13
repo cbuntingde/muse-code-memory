@@ -73,11 +73,13 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern, int | None]] = [
      None),
     ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\."
                        r"[A-Za-z0-9_-]{8,}"), None),
-    ("private-key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"), None),
+    ("private-key", re.compile(
+        r"-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----"
+        r"(?:.*?-----END \1-----|.*\Z)", re.DOTALL), None),
     ("secret-assignment", re.compile(
         r"(?i)\b(api[_-]?key|secret|client-secret|passwd|password|"
-        r"auth[_-]?token|access[_-]?token)\s*[:=]\s*['\"]?"
-        r"([^\s'\";,]+)"), 2),
+        r"auth[_-]?token|access[_-]?token)['\"]?\s*[:=]\s*"
+        r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s'\";,}]+)"), 2),
     ("url-password", re.compile(
         r"(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@]+:)([^/\s@?#]+)(@)"), 2),
 ]
@@ -97,6 +99,8 @@ def _sub_group(pattern: re.Pattern, text: str, group: int,
     last = 0
     count = 0
     for m in pattern.finditer(text):
+        if m.group(group).strip("'\"").startswith("[redacted:"):
+            continue
         out.append(text[last:m.start(group)])
         out.append(marker)
         last = m.end(group)

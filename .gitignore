@@ -25,3 +25,4 @@ dev/
 
 # Rebuildable RAG cache for the repo's own shared-memory scaffold
 .agents/memory/.rag-index.json
+.memory.lock

@@ -17,7 +17,7 @@ captured automatically, recalled with built-in retrieval, and maintained without
   one implementation
 
 Status: `muse skills validate` and `muse plugins validate` both return `valid: true`
-with empty diagnostics. 132 unit/contract tests pass
+with empty diagnostics. 167 unit/contract tests pass
 (`python3 -m unittest discover -s tests`).
 
 ## Install
@@ -139,7 +139,7 @@ muse_memory/               stdlib-only core: paths, store, rag, extractor, listi
 mcp/server.py              MCP stdio server (recall/save/stats/list)
 skills/memory/SKILL.md     agent instructions for using memory
 commands/                  /remember /recall /memories /forget /archive /consolidate
-tests/                     132 unittest tests incl. hook + MCP contract tests
+tests/                     167 unittest tests incl. hook + MCP contract tests
 .github/workflows/ci.yml   unittest matrix + bundle validation when muse is present
 examples/                  best-effort hooks.json / settings hooks block
 ```

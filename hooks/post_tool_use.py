@@ -30,7 +30,8 @@ def main(event: dict) -> None:
     text = text[:int(cfg.get("capture_tool_result_max_chars", 6000))]
     session_id = str(event.get("session_id", ""))
     candidates = extractor.extract_candidates(
-        text, source="tool", session_id=session_id, max_candidates=3)
+        text, source="tool", session_id=session_id,
+        default_scope=cfg['default_scope'], max_candidates=3)
     if not candidates:
         return
     store = MemoryStore(cwd)
