@@ -12,6 +12,7 @@ This project uses automatic cross-session memory. It captures durable facts on i
 Before answering questions about past work, conventions, decisions, or fixes — or when starting a task in unfamiliar code — recall memory:
 
 - Prefer the `memory_recall` MCP tool with a short query ("test conventions", "deploy process", "why X was chosen"). Use `memory_list` to enumerate topics before diving into files.
+- Time questions filter by filing date automatically: "what did we complete yesterday", "last Monday's milestone", "last month" (explicit `since`/`until` YYYY-MM-DD when precision matters).
 - Auto-recalled context may already appear in your prompt; use it, and read the full topic file when a snippet matters.
 - Recall touches files to mark them useful; that signal keeps them alive during cleanup.
 

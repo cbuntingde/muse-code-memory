@@ -31,12 +31,33 @@ def cmd_init(args) -> int:
 
 
 def cmd_recall(args) -> int:
+    from muse_memory import dates
+
     cfg = config_mod.load(args.cwd)
     store = _store(args)
     top_k = args.top_k or int(cfg["recall_top_k"])
+    cleaned, auto = dates.split_query(args.query)
+    since, until = auto if auto else (None, None)
+    for key, is_start in (("since", True), ("until", False)):
+        if getattr(args, key, None):
+            parsed = dates.parse_day(str(getattr(args, key)))
+            if parsed is None:
+                print(json.dumps(
+                    {"error": f"--{key} must be YYYY-MM-DD, "
+                              f"got {getattr(args, key)!r}"}))
+                return 1
+            if is_start:
+                since = parsed[0]
+            else:
+                until = parsed[1]
+    if since is not None and until is not None and since > until:
+        print(json.dumps(
+            {"error": f"empty date range ({dates.label(since, until)}): "
+                      f"--since is after --until"}))
+        return 1
     if getattr(args, "explain", False):
-        rows = rag.explain_all(list(store.scopes.values()), args.query,
-                               top_k=top_k)
+        rows = rag.explain_all(list(store.scopes.values()), cleaned,
+                               top_k=top_k, since=since, until=until)
         if args.json:
             print(json.dumps(rows, indent=2))
         elif not rows:
@@ -50,14 +71,18 @@ def cmd_recall(args) -> int:
                       f"recency x{row['recency_boost']:.2f} "
                       f"use x{row['use_boost']:.2f} :: {row['title']}")
         return 0
-    hits = rag.search_all(list(store.scopes.values()), args.query,
+    hits = rag.search_all(list(store.scopes.values()), cleaned,
                           top_k=top_k, min_score=float(cfg["min_score"]),
                           include_archive=bool(
-                              getattr(args, "include_archive", False)))
+                              getattr(args, "include_archive", False)),
+                          since=since, until=until)
     if args.json:
         print(json.dumps([h.__dict__ for h in hits], indent=2))
     else:
-        text = rag.format_context(hits, int(cfg["recall_max_chars"]))
+        header = (f"Relevant memory ({dates.label(since, until)}):"
+                  if since is not None or until is not None else None)
+        text = rag.format_context(hits, int(cfg["recall_max_chars"]),
+                                  header=header)
         print(text if text else "(no relevant memory)")
     for hit in hits[:3]:
         if hit.archived:
@@ -504,6 +529,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.add_argument("--include-archive", action="store_true",
                    help="also search archived topics")
+    p.add_argument("--since", default=None,
+                   help="only memories filed on/after YYYY-MM-DD")
+    p.add_argument("--until", default=None,
+                   help="only memories filed before the day after YYYY-MM-DD")
     p.add_argument("--explain", action="store_true",
                    help="show per-hit score breakdown")
     p.set_defaults(fn=cmd_recall)
@@ -524,6 +553,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--top-k", type=int, default=0)
     p.add_argument("--json", action="store_true")
     p.add_argument("--include-archive", action="store_true")
+    p.add_argument("--since", default=None)
+    p.add_argument("--until", default=None)
     p.add_argument("--explain", action="store_true")
     p.set_defaults(fn=cmd_search)
 

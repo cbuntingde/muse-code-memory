@@ -44,6 +44,52 @@ class ExtractorTest(unittest.TestCase):
         self.assertTrue(cands)
         self.assertEqual(cands[0]["scope"], "project-personal")
 
+    def test_extracts_milestone(self) -> None:
+        cands = extractor.extract_candidates(
+            "Phase 2 finished: auth refactor merged and all tests pass.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "milestone")
+
+    def test_extracts_project_change(self) -> None:
+        cands = extractor.extract_candidates(
+            "Deployed v1.2 of the API endpoint to production with migrations.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "project-change")
+
+    def test_ignores_everyday_chatter_with_action_verbs(self) -> None:
+        self.assertEqual(extractor.extract_candidates(
+            "Added sugar to my coffee this morning before the daily standup."), [])
+        self.assertEqual(extractor.extract_candidates(
+            "I updated my status on the project board this morning before standup."), [])
+
+    def test_project_build_needs_project_context(self) -> None:
+        cands = extractor.extract_candidates(
+            "Added OAuth login to the API endpoint with a database migration.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "project-build")
+
+    def test_ship_verb_needs_no_context(self) -> None:
+        cands = extractor.extract_candidates(
+            "Deployed v1.2 to production last night with no downtime at all.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "project-change")
+
+    def test_generic_task_statement_is_not_a_milestone(self) -> None:
+        self.assertEqual(extractor.extract_candidates(
+            "Each task takes a long time to complete when the queue is full."), [])
+
+    def test_merged_needs_project_context(self) -> None:
+        self.assertEqual(extractor.extract_candidates(
+            "I merged the leftover documents into one file last night."), [])
+        cands = extractor.extract_candidates(
+            "Merged branch feature into main for the upcoming release cycle.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "project-build")
+        cands = extractor.extract_candidates(
+            "Merged pull request 42 with all checks passing last night.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "project-build")
+
     def test_tool_failure_boosts_importance(self) -> None:
         cands = extractor.extract_candidates(
             "The deploy failed because the migration was missing.",

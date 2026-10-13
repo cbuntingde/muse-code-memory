@@ -1,3 +1,4 @@
+import datetime
 import json
 import subprocess
 import sys
@@ -98,6 +99,26 @@ class HookContractTest(IsolatedCase):
                       payload["hookSpecificOutput"]["additionalContext"])
         self.assertIn("muse-memory: recalled",
                       payload["systemMessage"])
+
+    def test_user_prompt_submit_answers_time_question(self) -> None:
+        store = MemoryStore(self.work)
+        store.ensure_all()
+        scope = store.get_scope("project-personal")
+        assert scope is not None
+        scope.write_topic("milestone",
+                          "# Milestone\n\n- Milestone completed: dark mode shipped.\n")
+        noon = datetime.datetime.now(datetime.timezone.utc).replace(
+            hour=12, minute=0, second=0, microsecond=0).timestamp()
+        scope.set_file_meta("milestone.md", created=noon - 86400,
+                            updated=noon - 86400)
+        code, out, _ = self._run_hook("user_prompt_submit.py", {
+            "hook_event_name": "UserPromptSubmit", "session_id": "abc",
+            "cwd": str(self.work),
+            "prompt": "what did we complete yesterday"})
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertIn("milestone.md",
+                      payload["hookSpecificOutput"]["additionalContext"])
 
     def test_post_tool_use_queues_silently(self) -> None:
         code, out, _ = self._run_hook("post_tool_use.py", {

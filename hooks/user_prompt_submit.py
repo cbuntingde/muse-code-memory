@@ -11,7 +11,7 @@ from _common import emit_context, event_cwd, run  # noqa: E402
 
 def main(event: dict) -> None:
     from muse_memory import config as config_mod
-    from muse_memory import rag
+    from muse_memory import dates, rag
     from muse_memory.store import MemoryStore
 
     prompt = event.get("prompt") or event.get("user_prompt") or event.get("text") or ""
@@ -20,10 +20,13 @@ def main(event: dict) -> None:
     cwd = event_cwd(event)
     cfg = config_mod.load(cwd)
     store = MemoryStore(cwd)
+    cleaned, auto = dates.split_query(prompt)
+    since, until = auto if auto else (None, None)
     hits = rag.search_all(
-        list(store.scopes.values()), prompt,
+        list(store.scopes.values()), cleaned,
         top_k=int(cfg.get("recall_top_k", 5)),
         min_score=float(cfg.get("min_score", 0.05)),
+        since=since, until=until,
     )
     if not hits:
         return

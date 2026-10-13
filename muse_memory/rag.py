@@ -76,6 +76,7 @@ def chunk_record(rec: MemoryRecord, max_chars: int = 1200) -> list[dict]:
             "text": text,
             "importance": rec.importance,
             "updated": rec.updated,
+            "created": rec.created,
             "accessed": rec.accessed,
             "access_count": rec.access_count,
         })
@@ -143,13 +144,17 @@ class RagIndex:
         return score
 
     def search(self, query: str, top_k: int = 5, min_score: float = 0.0,
-               now: float | None = None) -> list[ScoredChunk]:
+               now: float | None = None,
+               since: float | None = None,
+               until: float | None = None) -> list[ScoredChunk]:
         q_terms = tokenize(query)
         if not q_terms or not self.chunks:
             return []
         now = now if now is not None else utc_now()
         scored: list[ScoredChunk] = []
         for i, chunk in enumerate(self.chunks):
+            if not _in_range(chunk, since, until):
+                continue
             lexical = self._bm25(q_terms, i)
             if lexical <= 0:
                 continue
@@ -203,6 +208,25 @@ def _fuse_parts(lexical: float, chunk: dict, now: float) -> dict:
 def _fuse(lexical: float, chunk: dict, now: float) -> float:
     """Fuse lexical score with behavioral signals (recency/importance/use)."""
     return _fuse_parts(lexical, chunk, now)["score"]
+
+
+def _in_range(chunk: dict, since: float | None,
+              until: float | None) -> bool:
+    """True when the chunk's filing date falls in [since, until).
+
+    Either the last update or the creation counts: a topic created weeks
+    ago but appended to yesterday is yesterday's work. Undated chunks
+    (pre-date indexes still cached on disk) are kept rather than hidden.
+    """
+    if since is None and until is None:
+        return True
+    times = [t for t in (float(chunk.get("updated", 0.0) or 0.0),
+                         float(chunk.get("created", 0.0) or 0.0)) if t]
+    if not times:
+        return True
+    lo = since if since is not None else 0.0
+    hi = until if until is not None else float("inf")
+    return any(lo <= t < hi for t in times)
 
 
 def scope_mtime(store: ScopeStore) -> float:
@@ -263,8 +287,20 @@ def index_health(store: ScopeStore) -> dict:
 
 def search_all(stores: list[ScopeStore], query: str, top_k: int = 5,
                min_score: float = 0.0,
-               include_archive: bool = False) -> list[ScoredChunk]:
-    """Search every scope index and merge rankings (round-robin safe merge)."""
+               include_archive: bool = False,
+               since: float | None = None,
+               until: float | None = None,
+               now: float | None = None) -> list[ScoredChunk]:
+    """Search every scope index and merge rankings (round-robin safe merge).
+
+    since/until restrict hits to memories filed in [since, until), for
+    time questions ("what did we complete yesterday"). When the query has
+    no lexical terms left after date parsing — or its terms match nothing
+    in range — in-range memories list back ranked by recency/importance
+    instead of returning nothing.
+    """
+    ranged = since is not None or until is not None
+    now = now if now is not None else utc_now()
     per: list[ScoredChunk] = []
     for store in stores:
         if include_archive:
@@ -275,7 +311,24 @@ def search_all(stores: list[ScopeStore], query: str, top_k: int = 5,
                 chunk["archived"] = chunk["record_id"] in archived
         else:
             idx = load_or_build(store)
-        per.extend(idx.search(query, top_k=top_k, min_score=0.0))
+        if query.strip():
+            per.extend(idx.search(query, top_k=top_k, min_score=0.0,
+                                  now=now, since=since, until=until))
+        elif ranged:
+            for chunk in idx.chunks:
+                if not _in_range(chunk, since, until):
+                    continue
+                score = _fuse_parts(1.0, chunk, now)["score"]
+                per.append(ScoredChunk(
+                    chunk_id=chunk["chunk_id"], scope=chunk["scope"],
+                    file=chunk["file"], title=chunk["title"],
+                    text=chunk["text"], score=score, lexical=1.0,
+                    importance=int(chunk.get("importance", 3)),
+                    archived=bool(chunk.get("archived", False))))
+    if ranged and not per and query.strip():
+        return search_all(stores, "", top_k=top_k, min_score=min_score,
+                          include_archive=include_archive,
+                          since=since, until=until, now=now)
     # Normalize per-scope lexical scales by best hit, then re-sort by fused score.
     best: dict[str, float] = {}
     for hit in per:
@@ -290,7 +343,9 @@ def search_all(stores: list[ScopeStore], query: str, top_k: int = 5,
 
 
 def explain_all(stores: list[ScopeStore], query: str,
-                top_k: int = 5) -> list[dict]:
+                top_k: int = 5,
+                since: float | None = None,
+                until: float | None = None) -> list[dict]:
     """Score breakdown per hit (lexical + boosts), same ordering as search_all."""
     q_terms = tokenize(query)
     if not q_terms:
@@ -300,6 +355,8 @@ def explain_all(stores: list[ScopeStore], query: str,
     for store in stores:
         idx = load_or_build(store)
         for i, chunk in enumerate(idx.chunks):
+            if not _in_range(chunk, since, until):
+                continue
             lexical = idx._bm25(q_terms, i)
             if lexical <= 0:
                 continue
@@ -317,10 +374,11 @@ def explain_all(stores: list[ScopeStore], query: str,
     return rows[:top_k]
 
 
-def format_context(hits: list[ScoredChunk], max_chars: int = 4000) -> str:
+def format_context(hits: list[ScoredChunk], max_chars: int = 4000,
+                 header: str | None = None) -> str:
     if not hits:
         return ""
-    parts = ["Relevant memory (auto-recalled):"]
+    parts = [header or "Relevant memory (auto-recalled):"]
     used = 0
     for hit in hits:
         snippet = hit.text.strip().replace("\n", " ")

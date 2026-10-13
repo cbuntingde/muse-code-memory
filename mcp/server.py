@@ -23,12 +23,21 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What to recall"},
+                "query": {"type": "string",
+                          "description": "What to recall. Date phrases "
+                                         "(yesterday, last Monday, last month) "
+                                         "filter by filing date automatically"},
                 "top_k": {"type": "integer", "default": 5, "minimum": 1,
                           "maximum": 20},
                 "include_archive": {"type": "boolean", "default": False,
                                     "description": "Also search archived "
                                                    "topics"},
+                "since": {"type": "string",
+                          "description": "Only memories filed on/after this "
+                                         "date (YYYY-MM-DD)"},
+                "until": {"type": "string",
+                          "description": "Only memories filed before the day "
+                                         "after this date (YYYY-MM-DD)"},
             },
             "required": ["query"],
         },
@@ -98,13 +107,30 @@ def _lazy():
 
 def tool_recall(args: dict) -> str:
     config_mod, _c, _e, rag, MemoryStore = _lazy()
+    from muse_memory import dates
     cfg = config_mod.load()
     store = MemoryStore()
+    query = str(args.get("query", ""))
+    cleaned, auto = dates.split_query(query)
+    since, until = auto if auto else (None, None)
+    for key, is_start in (("since", True), ("until", False)):
+        if args.get(key):
+            parsed = dates.parse_day(str(args[key]))
+            if parsed is None:
+                return f"error: {key} must be YYYY-MM-DD, got {args[key]!r}"
+            if is_start:
+                since = parsed[0]
+            else:
+                until = parsed[1]
+    if since is not None and until is not None and since > until:
+        return (f"error: empty date range ({dates.label(since, until)}): "
+                f"since is after until")
     hits = rag.search_all(
-        list(store.scopes.values()), str(args.get("query", "")),
+        list(store.scopes.values()), cleaned,
         top_k=int(args.get("top_k", 0) or cfg["recall_top_k"]),
         min_score=float(cfg["min_score"]),
-        include_archive=bool(args.get("include_archive", False)))
+        include_archive=bool(args.get("include_archive", False)),
+        since=since, until=until)
     if not hits:
         return "(no relevant memory)"
     for hit in hits[:3]:
@@ -116,7 +142,10 @@ def tool_recall(args: dict) -> str:
                 scope.touch_access(hit.file)
             except OSError:
                 pass
-    return rag.format_context(hits, int(cfg["recall_max_chars"]))
+    header = (f"Relevant memory ({dates.label(since, until)}):"
+              if since is not None or until is not None else None)
+    return rag.format_context(hits, int(cfg["recall_max_chars"]),
+                              header=header)
 
 
 def tool_save(args: dict) -> str:

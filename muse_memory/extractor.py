@@ -4,7 +4,9 @@ Hooks observe tool results and prompts; this module turns raw text into
 structured candidates (topic, importance, tags, scope hint) without any
 model call, so it works offline inside hook context. Precision is favored
 over recall: only explicit decisions, preferences, standing rules, fixes,
-and durable facts are captured. Chatty or task-local content is ignored.
+milestones, project changes, and durable facts are captured. Everyday
+verbs (added, updated, merged, …) only count with project context, so
+chatty or task-local content is ignored.
 """
 
 from __future__ import annotations
@@ -25,6 +27,13 @@ RULE_PATTERNS: list[tuple[re.Pattern, str, int, list[str]]] = [
      "fix", 3, ["fix"]),
     (re.compile(r"\b(error|failed|failure|broken|crash)\b.{0,80}(because|due to|caused by).{0,120}", re.I),
      "gotcha", 3, ["gotcha"]),
+    (re.compile(r"\b(phase|milestone|stage|step)\b.{0,60}\b(finished|complete[ds]?|completion|done|reached|closed)\b"
+                r"|\b(finished|completed?|done)\b.{0,40}\b(phase|milestone|stage|step)\b", re.I),
+     "milestone", 3, ["milestone"]),
+    (re.compile(r"\b(deployed|shipped|released|migrated)\b.{0,160}", re.I),
+     "project-change", 3, ["project", "change"]),
+    (re.compile(r"\b(implemented|added|created|updated|refactored|upgraded|merged)\b.{0,160}", re.I),
+     "project-build", 3, ["project", "change"]),
     (re.compile(r"\b(uses?|runs? on|requires?|depends on)\s+[A-Z][\w.+-]*(?:\s+\d[\w.]*)?", re.I),
      "fact", 2, ["fact"]),
 ]
@@ -37,13 +46,17 @@ CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 PROJECT_HINTS = re.compile(
     r"(\.py|\.js|\.ts|\.md|\.json|\.toml|\.yaml|\byaml\b|repo\b|branch\b|"
     r"endpoint|migration|schema|deploy|pipeline|test suite|package\.json|"
-    r"requirements\.txt|pyproject|dockerfile|makefile)", re.I)
+    r"requirements\.txt|pyproject|dockerfile|makefile|pull request|\bpr\b)", re.I)
 GLOBAL_HINTS = re.compile(
     r"\b(i (prefer|like|always|never)|my (style|preference|workflow|editor|"
     r"shell|os)|across all projects|in general)\b", re.I)
 
 MAX_CANDIDATE_CHARS = 600
 MIN_CANDIDATE_WORDS = 5
+
+# Kinds that only fire with project context (file names, repo words, …):
+# without it these everyday verbs match chatter ("added sugar to coffee").
+CONTEXT_GATED_KINDS = frozenset({"project-build"})
 
 # (kind, pattern, match-group to redact or None for the whole match).
 # Group redaction keeps the surrounding fact ("password = [redacted]")
@@ -170,6 +183,9 @@ def extract_candidates(text: str, source: str = "tool",
         for pattern, kind, importance, tags in RULE_PATTERNS:
             m = pattern.search(sentence)
             if not m:
+                continue
+            if (kind in CONTEXT_GATED_KINDS
+                    and PROJECT_HINTS.search(sentence) is None):
                 continue
             key = sentence.lower()
             if key in seen:

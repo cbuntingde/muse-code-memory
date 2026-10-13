@@ -17,7 +17,7 @@ captured automatically, recalled with built-in retrieval, and maintained without
   one implementation
 
 Status: `muse skills validate` and `muse plugins validate` both return `valid: true`
-with empty diagnostics. 102 unit/contract tests pass
+with empty diagnostics. 132 unit/contract tests pass
 (`python -m unittest discover -s tests`).
 
 ## Install
@@ -64,7 +64,8 @@ SessionEnd          -> mine transcript tail, file everything, full maintenance
 ```
 
 Capture is heuristic and precision-biased: explicit decisions, always/never rules,
-preferences, fixes, and durable facts. Chatter and task-local detail are ignored.
+preferences, fixes, milestones, and project changes (everyday build verbs only
+with project context). Chatter and task-local detail are ignored.
 Pasted credentials are dropped at capture time and remaining secret values are
 redacted (`[redacted:<kind>]`) before anything is filed — including slugs derived
 for topic filenames. Bare security words without values ("token", "password")
@@ -138,7 +139,7 @@ muse_memory/               stdlib-only core: paths, store, rag, extractor, listi
 mcp/server.py              MCP stdio server (recall/save/stats/list)
 skills/memory/SKILL.md     agent instructions for using memory
 commands/                  /remember /recall /memories /forget /archive /consolidate
-tests/                     102 unittest tests incl. hook + MCP contract tests
+tests/                     132 unittest tests incl. hook + MCP contract tests
 .github/workflows/ci.yml   unittest matrix + bundle validation when muse is present
 examples/                  best-effort hooks.json / settings hooks block
 ```
