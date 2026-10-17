@@ -61,6 +61,24 @@ class ExtractorFragmentGuardTest(unittest.TestCase):
         self.assertTrue(cands)
         self.assertEqual(cands[0]["kind"], "decision")
 
+    def test_python_import_dump_rejected(self) -> None:
+        text = ("Hooks that must stay read-only call recall with read_only=True "
+                "and queue their access signals instead of touching metadata. "
+                "from muse_memory import config as config_mod")
+        self.assertEqual(extractor.extract_candidates(text), [])
+
+    def test_diff_hunk_rejected(self) -> None:
+        text = ("Never merge branches @@ -12,3 +14,5 @@ without review.")
+        self.assertEqual(extractor.extract_candidates(text), [])
+
+    def test_digit_pipe_without_space_rejected(self) -> None:
+        text = ("Never skip the bounded 5|Bounded retry path in hooks. 123|Listing residue is rejected too.")
+        self.assertEqual(extractor.extract_candidates(text), [])
+
+    def test_system_reminder_artifact_rejected(self) -> None:
+        text = ("Always use Get-Content to inspect output. </system-reminder>")
+        self.assertEqual(extractor.extract_candidates(text), [])
+
     def test_fragment_reason_flags_and_clears(self) -> None:
         self.assertIsNone(extractor.fragment_reason(
             "We decided to use Postgres for the session store."))

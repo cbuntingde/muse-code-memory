@@ -76,7 +76,7 @@ SessionEnd          -> mine transcript tail, file proposals, full maintenance
 
 Capture is heuristic and precision-biased: explicit decisions, always/never rules,
 preferences, fixes, milestones, and project changes (everyday build verbs only
-with project context). Chatter and task-local detail are ignored, and tool
+with project context; stack statements and dev-doc/plan paths auto-file). Chatter and task-local detail are ignored, and tool
 payloads — JSON dumps, patch bodies, line-numbered dumps, escaped text, terminal
 mojibake, session-log paths — are rejected at extraction time, so raw code and
 logs never become memory files. Legacy fragments already on disk are retired to

@@ -90,6 +90,34 @@ class ExtractorTest(unittest.TestCase):
         self.assertTrue(cands)
         self.assertEqual(cands[0]["kind"], "project-build")
 
+    def test_extracts_project_stack(self) -> None:
+        cands = extractor.extract_candidates(
+            "Our stack is Python 3.14, SQLite FTS5 and PowerShell.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "project-stack")
+        self.assertGreaterEqual(cands[0]["importance"], 4)
+
+    def test_extracts_repo_uses_lowercase_stack(self) -> None:
+        cands = extractor.extract_candidates(
+            "The repo uses python and sqlite for storage.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "project-stack")
+
+    def test_extracts_dev_docs_reference(self) -> None:
+        cands = extractor.extract_candidates(
+            "The development docs live in docs/architecture.md.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "project-docs")
+        self.assertGreaterEqual(cands[0]["importance"], 4)
+
+    def test_plan_without_file_is_not_captured(self) -> None:
+        self.assertEqual(extractor.extract_candidates(
+            "The plan is to ship the release in June."), [])
+
+    def test_stack_verb_is_not_captured(self) -> None:
+        self.assertEqual(extractor.extract_candidates(
+            "We stacked the boxes in the warehouse this morning."), [])
+
     def test_tool_failure_boosts_importance(self) -> None:
         cands = extractor.extract_candidates(
             "The deploy failed because the migration was missing.",

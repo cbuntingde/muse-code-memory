@@ -34,6 +34,18 @@ RULE_PATTERNS: list[tuple[re.Pattern, str, int, list[str]]] = [
      "project-change", 3, ["project", "change"]),
     (re.compile(r"\b(implemented|added|created|updated|refactored|upgraded|merged)\b.{0,160}", re.I),
      "project-build", 3, ["project", "change"]),
+    # Durable project identity comes before the generic fact pattern so
+    # "stack uses X" files as project-stack, not as a plain fact. Tight by
+    # construction ("stack"/"repo"+"uses" words or a real .md/docs/ path),
+    # so "the plan is to ship in June" still matches nothing. Importance 4
+    # auto-files at Stop/SessionEnd instead of expiring as a proposal.
+    (re.compile(r"\bstack\b.{0,60}\b(is|are|uses?|using|includes?|including|consists of|built with|based on|runs? on|:)\b.{0,120}"
+                r"|\b(repo|project|codebase|service|app)\b.{0,40}\b(uses?|using|runs? on|requires?|depends on|built with|written in)\b.{0,100}"
+                r"|\b(tech stack|toolchain)\b.{0,120}", re.I),
+     "project-stack", 4, ["project", "change"]),
+    (re.compile(r"\b(dev docs|development docs|design docs?|documentation|plan|roadmap|spec|blueprint|design doc)\b"
+                r".{0,80}([\w./-]+\.md\b|docs?/[\w./-]+)", re.I),
+     "project-docs", 4, ["project", "change"]),
     (re.compile(r"\b(uses?|runs? on|requires?|depends on)\s+[A-Z][\w.+-]*(?:\s+\d[\w.]*)?", re.I),
      "fact", 2, ["fact"]),
 ]
@@ -58,6 +70,18 @@ MIN_CANDIDATE_WORDS = 5
 # regex heuristics must never turn into memories. Used both as a capture
 # guard and by consolidation.retire_fragments to sweep already-filed junk.
 FRAGMENT_MARKERS: list[tuple[str, re.Pattern]] = [
+    # Pasted imports, diff residue, test boilerplate, prompt tags, tight
+    # digit-pipe residue, and machine paths seen in filed topics (v1.1.0).
+    ("code-import", re.compile(
+        r"\bfrom\s+[a-zA-Z_][\w.]*\s+import\s+[a-zA-Z_*][\w., *]*")),
+    ("diff-hunk", re.compile(
+        r"@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@|---\s+original\s+\+\+\+\s+updated")),
+    ("diff-plus", re.compile(r'\+\s*(from\s+|import\s+|"""|def\s+|class\s+)')),
+    ("test-boilerplate", re.compile(
+        r"class\s+\w+Test\s*\([^)]*TestCase[^)]*\)|sys\.path\.insert\(0")),
+    ("pipe-fragment", re.compile(r"(?:^|[\s(])\d{1,5}\|[-A-Za-z#]")),
+    ("prompt-artifact", re.compile(r"</?system-reminder")),
+    ("unc-path", re.compile(r"\\\\\?\\")),
     ("json-payload", re.compile(
         r'\{"|"filePath"|structuredPatch|"oldStart"|"newStart"|'
         r'"find":|"replace":')),
