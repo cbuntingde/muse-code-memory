@@ -52,7 +52,12 @@ RULE_PATTERNS: list[tuple[re.Pattern, str, int, list[str]]] = [
 
 SKIP_PATTERNS = re.compile(
     r"(lorem|placeholder|todo:?($|\s)|fixme|xxx|asdf|test test|hello world"
-    r"|thank you|thanks|sure,|okay,? (here|let)|let me )", re.I)
+    r"|thank you|thanks)", re.I)
+
+# Conversational openers ("Sure, ...", "Let me ...") are filler around the
+# durable claim, not a reason to drop the sentence: strip them from the
+# front instead of discarding the whole match.
+SKIP_OPENER_RE = re.compile(r"^(sure,|okay,? (here|let)|let me)\W*", re.I)
 
 CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 PROJECT_HINTS = re.compile(
@@ -179,6 +184,8 @@ def redact_secrets(text: str) -> tuple[str, list[str]]:
 
 
 _HIGH_ENTROPY_RE = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{32,}(?![A-Za-z0-9+/=_-])")
+_HEX_RUN_RE = re.compile(r"[0-9a-f]+", re.I)
+_HASH_CONTEXT_RE = re.compile(r"(commit|sha|hash|checksum|\brev\b|revision|pinned|object id)", re.I)
 
 
 def blocked_for_shared(text: str) -> list[str]:
@@ -192,6 +199,8 @@ def blocked_for_shared(text: str) -> list[str]:
     _, kinds = redact_secrets(text)
     reasons = list(kinds)
     for token in _HIGH_ENTROPY_RE.findall(text or ""):
+        if (_HEX_RUN_RE.fullmatch(token) and _HASH_CONTEXT_RE.search(text or "")):
+            continue  # named version-control hash, not a credential
         if any(c.isdigit() for c in token) and any(c.isalpha() for c in token):
             reasons.append("high-entropy-token")
             break
@@ -246,6 +255,10 @@ def extract_candidates(text: str, source: str = "tool",
     seen: set[str] = set()
     candidates: list[dict] = []
     for sentence in _sentences(cleaned):
+        sentence = SKIP_OPENER_RE.sub("", sentence).strip()
+        if (len(sentence) < 30
+                or len(sentence.split()) < MIN_CANDIDATE_WORDS):
+            continue
         if SKIP_PATTERNS.search(sentence):
             continue
         sentence, secret_kinds = redact_secrets(sentence)

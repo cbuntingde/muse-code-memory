@@ -26,7 +26,8 @@ def find_session_file(session_id: str) -> Path | None:
     Scans day directories newest-first and stops at the first hit, so
     cost stays bounded no matter how much session history exists. Day
     segments are zero-padded (YYYY/MM/DD), so lexicographic order is
-    chronological.
+    chronological. A truncated id resolves only when it matches exactly
+    one session.
     """
     if not session_id:
         return None
@@ -45,19 +46,28 @@ def find_session_file(session_id: str) -> Path | None:
                 return exact
         except OSError:
             continue
-        # Fallback: session id may be a prefix.
+    # Fallback: session id may be a prefix. Days scan newest-first, so
+    # the first hit is the newest copy of that session. A prefix matching
+    # different session names is ambiguous: return None instead of mining
+    # the wrong session's transcript.
+    matches: list[Path] = []
+    for day in days:
         try:
             children = list(day.iterdir())
         except OSError:
             continue
         for child in children:
-            if child.is_dir() and child.name.startswith(session_id):
-                candidate = child / "session.jsonl"
-                try:
-                    if candidate.is_file():
-                        return candidate
-                except OSError:
-                    continue
+            if not child.is_dir() or not child.name.startswith(session_id):
+                continue
+            candidate = child / "session.jsonl"
+            try:
+                if candidate.is_file():
+                    matches.append(candidate)
+            except OSError:
+                continue
+    names = {p.parent.name for p in matches}
+    if len(names) == 1 and matches:
+        return matches[0]
     return None
 
 
@@ -228,7 +238,9 @@ def drain_pending(store: MemoryStore, max_items: int = 200) -> list[dict]:
                 if len(lines) <= remaining:
                     pending.unlink(missing_ok=True)
                 else:
-                    pending.write_text("\n".join(lines[remaining:]) + "\n", encoding="utf-8")
+                    tmp = pending.with_suffix(".tmp")
+                    tmp.write_text("\n".join(lines[remaining:]) + "\n", encoding="utf-8")
+                    os.replace(tmp, pending)
             except OSError:
                 pass
     return out

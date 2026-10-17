@@ -47,7 +47,13 @@ class MemoryService:
                include_archive: bool = False,
                since: str | None = None, until: str | None = None,
                read_only: bool = False, access: str = "touch"):
-        """(cleaned, since_ts, until_ts, hits). access: touch|queue|none."""
+        """(cleaned, since_ts, until_ts, hits). access: touch|queue|none.
+
+        top_k of None or 0 selects the configured default: 0 is the
+        long-standing "unspecified" sentinel used by the CLI (argparse
+        default) and the MCP tool, so an explicit 0 cannot request
+        zero hits.
+        """
         cleaned, since_ts, until_ts = self.parse_range(query, since, until)
         hits = rag.search_all(
             list(self.store.scopes.values()), cleaned,
@@ -109,8 +115,12 @@ class MemoryService:
         # the fail-closed shared-scope check, which must see credentials.
         _cleaned, secret_kinds = extractor.redact_secrets(text)
         scope_name = scope or self.cfg.get("default_scope", "project-personal")
-        if scope_name not in ("global", "project-personal", "project-shared"):
-            raise ValueError(f"unknown scope {scope_name!r}")
+        available = sorted(self.store.scopes)
+        if scope_name not in available:
+            known = ", ".join(available) or "none"
+            raise ValueError(f"unknown scope {scope_name!r} (available: {known})")
+        if not text.strip():
+            raise ValueError("empty text")
         cand = {"text": text, "kind": "note",
                 "topic": topic or extractor.suggest_topic(text, "note"),
                 "importance": importance, "tags": list(tags or []),

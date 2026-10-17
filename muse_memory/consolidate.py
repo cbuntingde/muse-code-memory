@@ -13,6 +13,7 @@ Jobs (all idempotent, safe to run on every SessionEnd):
 from __future__ import annotations
 
 import difflib
+import re
 import time
 from pathlib import Path
 from functools import wraps
@@ -22,7 +23,7 @@ from .locking import scope_lock
 from .extractor import (blocked_for_shared, candidate_to_bullet,
                         fragment_reason, redact_secrets)
 from .store import (MemoryRecord, MemoryStore, ScopeStore, frontmatter_block,
-                   slugify_topic, summary_of)
+                   normalize_line, slugify_topic, summary_of)
 
 BULLET_PREFIXES = ("- ", "* ")
 
@@ -326,6 +327,38 @@ def enforce_file_cap(store: ScopeStore, max_files: int = 40) -> dict:
     return {"scope": store.scope, "retired_for_cap": retired}
 
 
+def _max_ratio(len_a: int, len_b: int) -> float:
+    """Upper bound on the SequenceMatcher ratio for two lengths.
+
+    ratio() is 2*M/(len_a+len_b) with M <= min(len_a, len_b), so a pair
+    whose bound is below a cutoff can never reach it: skipping the
+    comparison is exact, never a heuristic.
+    """
+    if not len_a or not len_b:
+        return 0.0
+    return 2 * min(len_a, len_b) / (len_a + len_b)
+
+
+def _similar_at_least(a: str, b: str, threshold: float) -> bool:
+    """similarity(a, b) >= threshold, skipping provably dissimilar pairs."""
+    if _max_ratio(len(a), len(b)) < threshold:
+        return False
+    return similarity(a, b) >= threshold
+
+
+def display_title(topic: str, text: str) -> str:
+    """Human title from a slug, preserving acronyms cited in the text.
+
+    The slug is already lowercased, so all-caps can only be restored for
+    words the source text itself writes in caps (API, CLI); other words
+    are capitalized normally.
+    """
+    caps = {w.lower() for w in re.findall(r"[A-Z]{2,}", text)}
+    words = [w.upper() if w.lower() in caps else w.capitalize()
+             for w in topic.split("-") if w]
+    return " ".join(words) or topic
+
+
 @_locked_filing
 def file_candidate(cand: dict, store: MemoryStore,
                    dedupe_threshold: float = 0.85,
@@ -362,19 +395,22 @@ def file_candidate(cand: dict, store: MemoryStore,
         scanned = scope.read_all()
     # 1. Exact/near duplicate anywhere in scope -> skip (but refresh access).
     for rec in scanned:
-        if text.strip().lower() in rec.content.lower():
+        if normalize_line(bullet) in {normalize_line(ln) for ln in rec.content.splitlines() if ln.strip()}:
             scope.touch_access(rec.file)
             return {"action": "duplicate", "file": rec.file, "scope": scope.scope}
         for existing in _bullets(rec.content):
-            if similarity(existing, bullet) >= dedupe_threshold:
+            if _similar_at_least(existing, bullet, dedupe_threshold):
                 scope.touch_access(rec.file)
                 return {"action": "duplicate", "file": rec.file, "scope": scope.scope}
     # 2. Near-match topic -> append.
     best: MemoryRecord | None = None
     best_score = 0.0
     for rec in scanned:
-        score = similarity(rec.title + " " + summary_of(rec.content, 200),
-                           cand.get("topic", "") + " " + text[:200])
+        mine = rec.title + " " + summary_of(rec.content, 200)
+        theirs = cand.get("topic", "") + " " + text[:200]
+        if _max_ratio(len(mine), len(theirs)) <= best_score:
+            continue  # cannot beat the current best; skip the comparison
+        score = similarity(mine, theirs)
         if score > best_score:
             best_score = score
             best = rec
@@ -395,7 +431,7 @@ def file_candidate(cand: dict, store: MemoryStore,
                     existing.content = scope.read_record(scope.dir / filename).content
                     break
         return {"action": "appended", "file": filename, "scope": scope.scope}
-    title = topic.replace("-", " ").title()
+    title = display_title(topic, text)
     body = f"# {title}\n\n{bullet}\n"
     record = scope.write_topic(topic, body, meta={
         "tags": cand.get("tags", []),

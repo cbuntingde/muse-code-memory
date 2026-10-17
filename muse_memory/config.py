@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,26 @@ def _valid(key: str, val: Any) -> bool:
     return False
 
 
+_warned: set[tuple[str, str]] = set()
+
+
+def _warn_once(path: Path, key: str, detail: str) -> None:
+    """Stderr warning for a bad config entry, once per file+key per process.
+
+    Invalid entries still fall back to defaults (never break a hook), but
+    silence made typos undiscoverable; stderr keeps MCP stdout clean.
+    """
+    marker = (str(path), str(key))
+    if marker in _warned:
+        return
+    _warned.add(marker)
+    try:
+        print(f"muse-memory config: ignoring {key} in {path} ({detail})",
+              file=sys.stderr)
+    except OSError:
+        pass
+
+
 def load(cwd: str | os.PathLike | None = None) -> dict[str, Any]:
     cfg: dict[str, Any] = dict(DEFAULTS)
     for path in (paths.user_config_file(), paths.project_config_file(cwd)):
@@ -93,11 +114,18 @@ def load(cwd: str | os.PathLike | None = None) -> dict[str, Any]:
         try:
             data = json.loads(raw)
         except ValueError:
+            _warn_once(path, "<file>", "invalid JSON; using defaults")
             continue
-        if isinstance(data, dict):
-            for key, val in data.items():
-                if key in DEFAULTS and _valid(key, val):
-                    cfg[key] = val
+        if not isinstance(data, dict):
+            _warn_once(path, "<file>", "top-level JSON must be an object")
+            continue
+        for key, val in data.items():
+            if key not in DEFAULTS:
+                _warn_once(path, key, "unknown key")
+            elif not _valid(key, val):
+                _warn_once(path, key, f"invalid value {val!r}; using default")
+            else:
+                cfg[key] = val
     return cfg
 
 
@@ -111,6 +139,12 @@ def save_user_config(values: dict[str, Any]) -> Path:
             current = {}
     except (OSError, ValueError):
         current = {}
-    current.update({k: v for k, v in values.items() if k in DEFAULTS})
+    for k, v in values.items():
+        if k not in DEFAULTS:
+            _warn_once(path, k, "unknown key; not saved")
+        elif not _valid(k, v):
+            _warn_once(path, k, f"invalid value {v!r}; not saved")
+        else:
+            current[k] = v
     path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
     return path

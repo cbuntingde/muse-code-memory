@@ -104,38 +104,25 @@ def cmd_save(args) -> int:
         report["redacted"] = secret_kinds
         print(json.dumps(report, indent=2))
         return 1 if report.get('errors') else 0
-    scope = store.get_scope(scope_name)
-    if scope is None:
-        print(json.dumps({"error": f"unavailable scope: {scope_name}"}))
-        return 1
-    if scope_name == "project-shared":
-        blocked = extractor.blocked_for_shared(raw_text)
-        if blocked:
-            print(json.dumps({"error": "refused for project-shared scope: "
-                              f"credential-like content ({', '.join(blocked)})"}))
-            return 1
-    supersedes = getattr(args, "supersedes", None)
-    if supersedes:
-        from muse_memory.service import MemoryService
+    from muse_memory.service import MemoryService
+    try:
         result = MemoryService(args.cwd, scopes=args.scopes).save(
-            text, topic=args.topic, scope=scope_name,
+            raw_text, topic=args.topic, scope=scope_name,
             importance=args.importance, tags=args.tag or [],
-            supersedes=supersedes)
-        if result.get("action") == "blocked-secret":
-            print(json.dumps({"error": "refused for project-shared scope"}))
-            return 1
-        print(json.dumps({"file": f"{result['scope']}/{result['file']}",
-                          "redacted": secret_kinds,
-                          "superseded": result.get("superseded")}, indent=2))
-        return 0
-    record = scope.write_topic(args.topic or extractor.suggest_topic(text, "note"),
-                               f"# {(args.topic or 'Note').replace('-', ' ').title()}\n\n"
-                               f"- {text.strip()}\n",
-                               meta={"tags": args.tag or [],
-                                     "importance": args.importance,
-                                     "source": "manual"})
-    print(json.dumps({"file": f"{scope.scope}/{record.file}",
-                      "redacted": secret_kinds}, indent=2))
+            supersedes=getattr(args, "supersedes", None))
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}))
+        return 1
+    if result.get("action") == "blocked-secret":
+        print(json.dumps({"error": "refused for project-shared scope: "
+                          f"credential-like content ({', '.join(result.get('blocked', []))})"}))
+        return 1
+    out = {"file": f"{result['scope']}/{result['file']}",
+           "action": result.get("action", ""),
+           "redacted": result.get("redacted", [])}
+    if result.get("superseded"):
+        out["superseded"] = result["superseded"]
+    print(json.dumps(out, indent=2))
     return 0
 
 

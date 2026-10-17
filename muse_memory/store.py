@@ -112,6 +112,11 @@ def summary_of(body: str, limit: int = 140) -> str:
     return text[:limit]
 
 
+def normalize_line(line: str) -> str:
+    """Lowercased, whitespace-collapsed line for duplicate comparison."""
+    return re.sub(r"\s+", " ", line.strip().lower())
+
+
 def iso_date(ts: float) -> str:
     """Format an epoch timestamp as YYYY-MM-DD (UTC), "" when unset."""
     if not ts:
@@ -306,7 +311,12 @@ class ScopeStore:
         _, body = split_frontmatter(text)
         meta_key = path.relative_to(self.dir).as_posix()
         meta = self.file_meta(meta_key)
-        stat_updated = path.stat().st_mtime if path.exists() else utc_now()
+        try:
+            stat_updated = path.stat().st_mtime
+        except OSError:
+            # Missing (or concurrently deleted) file: never raise out of
+            # a bulk read because one topic vanished mid-scan.
+            stat_updated = utc_now()
         return MemoryRecord(
             id=self.record_id(meta_key),
             scope=self.scope,
@@ -379,10 +389,22 @@ class ScopeStore:
             current = target.read_text(encoding="utf-8")
         except OSError:
             return None
-        if addition.strip() in current:
+        have = {normalize_line(ln) for ln in current.splitlines() if ln.strip()}
+        missing = [ln.strip() for ln in addition.strip().splitlines()
+                   if ln.strip() and normalize_line(ln) not in have]
+        if not missing:
             return self.read_record(target)
-        target.write_text(current.rstrip() + "\n\n" + addition.strip() + "\n",
-                           encoding="utf-8")
+        new_text = current.rstrip() + "\n\n" + "\n".join(missing) + "\n"
+        tmp = target.with_suffix(".tmp")
+        try:
+            tmp.write_text(new_text, encoding="utf-8")
+            os.replace(tmp, target)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
         self.set_file_meta(filename, updated=utc_now())
         self.refresh_index()
         return self.read_record(target)
