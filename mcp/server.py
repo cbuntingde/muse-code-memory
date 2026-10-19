@@ -154,8 +154,11 @@ def tool_save(args: dict) -> str:
     if result.get("action") == "blocked-secret":
         return ("error: refused for project-shared scope: credential-like "
                 f"content ({', '.join(result.get('blocked', []))})")
+    from muse_memory import paths
+    read_ref = f"{paths.native_scope_name(result['scope'])}/{result['file']}"
+    result["read"] = read_ref
     headline = (f"muse-memory saved: {result['scope']}/{result['file']} "
-                f"({result['action']})")
+                f"({result['action']}) - read_memory {read_ref}")
     if secret_kinds:
         headline += f" [secrets redacted: {', '.join(secret_kinds)}]"
     return headline + "\n" + json.dumps(result)

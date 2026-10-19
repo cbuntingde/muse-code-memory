@@ -189,6 +189,28 @@ def index_row(rec: MemoryRecord) -> str:
     return f"- [{rec.title}]({rec.file}) · {suffix}\n"
 
 
+def index_preamble(text: str) -> str:
+    """Content between the index heading and the first managed section.
+
+    Muse's native MEMORY.md may carry free-form notes above the plugin's
+    grouped sections. They are not ours, so they are kept verbatim
+    instead of being dropped on the next index rewrite.
+    """
+    fm, body = split_frontmatter(text)
+    lines = body.splitlines()
+    out: list[str] = []
+    seen_heading = False
+    for line in lines:
+        if not seen_heading:
+            if HEADING_RE.match(line):
+                seen_heading = True
+            continue
+        if line.startswith("## ") or line.strip() == "---":
+            break
+        out.append(line)
+    return "\n".join(out).strip()
+
+
 class ScopeStore:
     """One scope directory on disk."""
 
@@ -549,6 +571,10 @@ class ScopeStore:
         Professional grouped template: one `##` section per index group,
         one `- [title](file)` line per topic with compact metadata, the
         48-file cap with an overflow note, and a footer with live counts.
+
+        Content that the plugin does not own is kept: Muse's native
+        memory files (free-form notes written before the plugin adopted
+        the directory) live in the same MEMORY.md and survive a rewrite.
         """
         index = self.dir / paths.MEMORY_INDEX
         try:
@@ -557,15 +583,18 @@ class ScopeStore:
             text = ""
         fm, _ = split_frontmatter(text)
         heading = "# Memory\n"
-        m = HEADING_RE.search(text)
-        if m:
-            heading = m.group(0) + "\n"
+        match = HEADING_RE.search(text)
+        if match:
+            heading = match.group(0) + "\n"
+        preamble = index_preamble(text)
         lines = ["---\n"] if fm else []
         for k, v in fm.items():
             lines.append(f"{k}: {v}\n")
         if fm:
             lines.append("---\n")
         lines.append("\n" + heading + "\n")
+        if preamble:
+            lines.append(preamble + "\n\n")
         records = self.read_all()
         grouped: dict[str, list[MemoryRecord]] = {g: [] for g in INDEX_GROUP_ORDER}
         for rec in records:
@@ -631,6 +660,11 @@ class MemoryStore:
         # config-based memories dir; no-op afterwards. Runs here so every
         # hook and CLI command sees the migrated layout.
         paths.migrate_legacy_base()
+        # When Muse's native memory directory exists for this workspace
+        # the plugin addresses it, so topics filed before adoption are
+        # copied across and stay readable with the native read_memory
+        # tool.
+        paths.sync_native_topics(self.cwd)
         titles = {"global": "Global Memory",
                   "project-personal": f"Project Memory ({self.cwd.name})",
                   "project-shared": f"Shared Project Memory ({self.cwd.name})"}

@@ -32,10 +32,24 @@ SNAPSHOT_PREFIX = ".snapshot-"
 ARCHIVE_DIR = "archive"
 
 _SLUG_CLEAN = re.compile(r"[^A-Za-z0-9]+")
+# Muse's own slug dirs are <stem>-<hex-hash> too, but the stem uses a
+# different sanitizer: every non-alphanumeric character becomes its own
+# dash, so "C:\work" becomes "C--work" while the collapse form is
+# "C-work". The two must still be recognised as the same workspace.
+_SLUG_PER_CHAR = re.compile(r"[^A-Za-z0-9]")
 # Adopted slug dirs are <stem>-<hex-hash>: the suffix guard stops a
 # workspace from claiming a sibling whose stem merely extends its own.
-_HASH_SUFFIX_RE = re.compile(r"[0-9a-f]{8,}$", re.IGNORECASE)
+_SLUG_DIR_RE = re.compile(r"^(?P<base>.+?)-(?P<hash>[0-9a-f]{6,40})$",
+                          re.IGNORECASE)
 _HASH_LEN = 12
+
+# Muse's native memory tools (read_memory / add_memory / edit_memory) use
+# their own scope names; the plugin mirrors the same roots on disk.
+NATIVE_SCOPE_NAMES = {
+    "global": "personal",
+    "project-personal": "personal_project",
+    "project-shared": "project",
+}
 
 
 def _windows_profile_dir() -> Path | None:
@@ -190,39 +204,142 @@ def canonical_cwd(cwd: str | os.PathLike | None = None) -> Path:
         return p.absolute()
 
 
-def slug_for(cwd: str | os.PathLike | None = None) -> str:
-    """Deterministic slug for a workspace path.
+def native_scope_name(scope: str) -> str:
+    """Muse's native scope name for a plugin scope.
 
-    Prefers adopting an existing native slug directory whose name starts with
-    the sanitized path stem (native Muse slugs are <sanitized-path>-<hash>),
-    so we share one directory with the built-in memory instead of forking.
-    Otherwise builds <sanitized>-<sha256(canonical)[:12]>.
+    read_memory/add_memory/edit_memory take `personal`, `personal_project`
+    or `project`; the plugin calls the same roots global,
+    project-personal and project-shared.
     """
+    return NATIVE_SCOPE_NAMES.get(scope, scope)
+
+
+def _norm_stem(text: str) -> str:
+    """Compare slugs across sanitizers: lower-case, one dash per run."""
+    return re.sub(r"-+", "-", text.strip("-").lower())
+
+
+def _stem_variants(canon: str) -> set[str]:
+    """Normalized stems Muse may use for this workspace path.
+
+    Covers both sanitizers (collapse runs, one dash per character) so a
+    Windows drive letter ("C:\\work" -> "C--work") still matches the
+    plugin's own "C-work".
+    """
+    collapse = _SLUG_CLEAN.sub("-", canon).strip("-")[:80]
+    per_char = _SLUG_PER_CHAR.sub("-", canon).strip("-")[:80]
+    return {_norm_stem(collapse), _norm_stem(per_char)}
+
+
+def canonical_slug(cwd: str | os.PathLike | None = None) -> str:
+    """The plugin's own deterministic slug for a workspace."""
     canon = str(canonical_cwd(cwd))
     stem = _SLUG_CLEAN.sub("-", canon).strip("-")
     stem = stem[:80] if len(stem) > 80 else stem
     digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:_HASH_LEN]
+    return f"{stem}-{digest}"
 
+
+def slug_for(cwd: str | os.PathLike | None = None) -> str:
+    """Slug dir for a workspace, adopting a native Muse dir when present.
+
+    The plugin's own slug is deterministic, but Muse's native memory
+    tools address a workspace through their own hashed directory. When
+    that directory exists the plugin adopts it, so a topic filed here is
+    readable with the native read_memory tool (and the other way round).
+    Adoption matches on the sanitized workspace stem, not on the hash,
+    because the two implementations hash differently.
+    """
+    canon = str(canonical_cwd(cwd))
+    own = canonical_slug(cwd)
     root = projects_root()
     if root.is_dir():
         try:
             names = sorted(p.name for p in root.iterdir() if p.is_dir())
         except OSError:
             names = []
-        # Exact stem-hash match first, then any native dir starting with stem.
+        targets = _stem_variants(canon)
         for name in names:
-            if name == f"{stem}-{digest}":
+            if name == own:
+                continue
+            match = _SLUG_DIR_RE.match(name)
+            if not match:
+                continue
+            if _norm_stem(match.group("base")) in targets:
                 return name
-        stem_low = stem.lower()
-        for name in names:
-            if name.lower().startswith(stem_low + "-") and _HASH_SUFFIX_RE.fullmatch(
-                    name.lower()[len(stem_low) + 1:]):
-                return name
-    return f"{stem}-{digest}"
+    return own
 
 
 def personal_project_dir(cwd: str | os.PathLike | None = None) -> Path:
     return projects_root() / slug_for(cwd)
+
+
+def _merge_meta(own_dir: Path, dest: Path, keys: list[str]) -> None:
+    """Copy sidecar metadata for the given relative paths into dest."""
+    import json
+    try:
+        source = json.loads((own_dir / META_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        source = {}
+    if not isinstance(source, dict):
+        source = {}
+    try:
+        current = json.loads((dest / META_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        current = {}
+    if not isinstance(current, dict):
+        current = {}
+    changed = False
+    for key in keys:
+        if key in source and key not in current:
+            current[key] = source[key]
+            changed = True
+    if not changed:
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    tmp = (dest / META_FILE).with_suffix(".tmp")
+    tmp.write_text(json.dumps(current, indent=1), encoding="utf-8")
+    os.replace(tmp, dest / META_FILE)
+
+
+def sync_native_topics(cwd: str | os.PathLike | None = None) -> str:
+    """Copy plugin-authored topics into an adopted native memory dir.
+
+    A workspace can end up with two directories: the plugin's own slug
+    and Muse's native slug. The plugin then addresses the native one (so
+    read_memory finds the files), but topics written earlier live in the
+    plugin's directory. They are copied across - never overwriting - and
+    their metadata is merged.
+
+    Returns "copied", "same", "absent", or "failed".
+    """
+    own_dir = projects_root() / canonical_slug(cwd)
+    dest = personal_project_dir(cwd)
+    if dest == own_dir:
+        return "same"
+    if not own_dir.is_dir():
+        return "absent"
+    try:
+        import shutil
+
+        from .locking import scope_lock
+        copied: list[str] = []
+        with scope_lock(dest):
+            for src in sorted(own_dir.rglob("*.md")):
+                rel = src.relative_to(own_dir)
+                if rel.parts[0].startswith(".") or rel.name == MEMORY_INDEX:
+                    continue
+                target = dest / rel
+                if target.exists():
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, target)
+                copied.append(rel.as_posix())
+            if copied:
+                _merge_meta(own_dir, dest, copied)
+        return "copied" if copied else "same"
+    except (OSError, ValueError):
+        return "failed"
 
 
 def git_root(cwd: str | os.PathLike | None = None) -> Path | None:

@@ -6,6 +6,7 @@ both surfaces stay identical. Rows are sorted by (scope, file).
 
 from __future__ import annotations
 
+from . import paths
 from .store import MemoryStore, iso_date
 
 
@@ -25,7 +26,8 @@ def list_rows(store: MemoryStore, scope_filter: str | None = None,
             rows.append({"scope": rec.scope, "file": rec.file, "title": rec.title,
                          "importance": rec.importance, "tags": rec.tags,
                          "access_count": rec.access_count, "pinned": rec.pinned,
-                         "updated": iso_date(rec.updated or rec.created)})
+                         "updated": iso_date(rec.updated or rec.created),
+                         "read": f"{paths.native_scope_name(rec.scope)}/{rec.file}"})
     rows.sort(key=lambda r: (r["scope"], r["file"]))
     return rows
 
@@ -37,7 +39,7 @@ def empty_message(filtered: bool) -> str:
 
 
 def format_table(rows: list[dict]) -> str:
-    headers = ("Scope", "File", "Imp", "Updated", "Title")
+    headers = ("Scope", "File", "Imp", "Updated", "Title", "Read")
     widths = [len(h) for h in headers]
     cells = []
     for row in rows:
@@ -45,7 +47,7 @@ def format_table(rows: list[dict]) -> str:
         if len(title) > 60:
             title = title[:57] + "..."
         cell = (row["scope"], row["file"], str(row["importance"]),
-                row["updated"], title)
+                row["updated"], title, row.get("read", ""))
         cells.append(cell)
         for i, value in enumerate(cell):
             widths[i] = max(widths[i], len(value))
@@ -60,10 +62,10 @@ def format_table(rows: list[dict]) -> str:
 
 
 def format_markdown(rows: list[dict]) -> str:
-    lines = ["| Scope | File | Imp | Updated | Title |",
-             "|---|---|---|---|---|"]
+    lines = ["| Scope | File | Imp | Updated | Title | Read |",
+             "|---|---|---|---|---|---|"]
     for row in rows:
         title = row["title"].replace("|", "\\|").replace("\n", " ")
         lines.append(f"| {row['scope']} | {row['file']} | {row['importance']} "
-                     f"| {row['updated']} | {title} |")
+                     f"| {row['updated']} | {title} | {row.get('read', '')} |")
     return "\n".join(lines)

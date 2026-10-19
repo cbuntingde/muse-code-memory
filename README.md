@@ -122,6 +122,28 @@ MCP tools (`memory` server over stdio):
 The `memory` skill teaches agents the recall-first / save-deliberately workflow.
 Listing never marks topics as used, so browsing cannot poison RAG's use signal.
 
+### Reading topics with Muse's native `read_memory`
+
+Muse's built-in memory tools (`read_memory`, `add_memory`, `edit_memory`) address
+the same directories this plugin manages, but with their own scope names and
+relative paths. Every recall hit, list row, and save result therefore carries a
+read pointer, for example `personal_project/rule-conventions.md`:
+
+```
+- [project-personal/rule-conventions.md] Conventions: always run cargo check
+  (read_memory personal_project/rule-conventions.md)
+```
+
+Pass that scope and path straight to `read_memory` to open the full topic.
+Scope mapping: `global` -> `personal`, `project-personal` -> `personal_project`,
+`project-shared` -> `project`.
+
+The plugin adopts Muse's own project memory directory when it exists (the two
+implementations sanitize and hash workspace paths differently, so adoption
+matches on the sanitized path, not the hash). Topics written before adoption
+are copied across, and free-form notes that Muse wrote into `MEMORY.md` are
+preserved when the plugin rewrites the index.
+
 ## CLI
 
 ```bash

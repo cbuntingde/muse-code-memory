@@ -118,6 +118,8 @@ def cmd_save(args) -> int:
                           f"credential-like content ({', '.join(result.get('blocked', []))})"}))
         return 1
     out = {"file": f"{result['scope']}/{result['file']}",
+           "read": (f"{paths.native_scope_name(result['scope'])}/"
+                    f"{result['file']}"),
            "action": result.get("action", ""),
            "redacted": result.get("redacted", [])}
     if result.get("superseded"):

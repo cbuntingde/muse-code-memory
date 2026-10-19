@@ -588,7 +588,7 @@ def format_context(hits: list[ScoredChunk], max_chars: int = 4000,
         if len(snippet) > 600:
             snippet = snippet[:600] + "…"
         tag = " (archived)" if hit.archived else ""
-        line = f"- [{hit.scope}/{hit.file}]{tag} {hit.title}: {snippet}"
+        line = _hit_line(hit, snippet, tag)
         if used + len(line) > max_chars:
             if used:
                 break
@@ -596,9 +596,21 @@ def format_context(hits: list[ScoredChunk], max_chars: int = 4000,
             # budget rather than returning a header with no memories.
             over = used + len(line) - max_chars
             snippet = snippet[:max(0, len(snippet) - over - 1)] + "…"
-            line = f"- [{hit.scope}/{hit.file}]{tag} {hit.title}: {snippet}"
+            line = _hit_line(hit, snippet, tag)
             parts.append(line)
             break
         parts.append(line)
         used += len(line)
     return "\n".join(parts) + "\n"
+
+
+def _hit_line(hit: ScoredChunk, snippet: str, tag: str) -> str:
+    """One recall line: scope/file, title, snippet, native read pointer.
+
+    The trailing pointer is what the agent needs to open the full topic
+    with Muse's native read_memory tool, whose scope names and relative
+    paths differ from the plugin's own scope labels.
+    """
+    native = paths.native_scope_name(hit.scope)
+    return (f"- [{hit.scope}/{hit.file}]{tag} {hit.title}: {snippet} "
+            f"(read_memory {native}/{hit.file})")

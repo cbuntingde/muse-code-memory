@@ -12,6 +12,7 @@ This project uses automatic cross-session memory. It captures durable facts on i
 Before answering questions about past work, conventions, decisions, or fixes — or when starting a task in unfamiliar code — recall memory:
 
 - Prefer the `memory_recall` MCP tool with a short query ("test conventions", "deploy process", "why X was chosen"). Use `memory_list` to enumerate topics before diving into files.
+- Every recall hit and list row carries a read pointer like `personal_project/rule-conventions.md`. Open the full topic with the native `read_memory` tool using exactly that scope and path (`scope="personal_project"`, `path="rule-conventions.md"`) - the pointer is relative to the scope root, which is where the native tool looks. Plugin scopes map to native ones as `global` -> `personal`, `project-personal` -> `personal_project`, `project-shared` -> `project`.
 - Time questions filter by filing date automatically: "what did we complete yesterday", "last Monday's milestone", "last month" (explicit `since`/`until` YYYY-MM-DD when precision matters).
 - Auto-recalled context may already appear in your prompt; use it, and read the full topic file when a snippet matters.
 - Prompt-time recall is read-only: it queues a use signal that Stop/SessionEnd apply to access counts, which keeps useful topics alive during cleanup.
