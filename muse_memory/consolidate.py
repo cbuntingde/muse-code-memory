@@ -20,7 +20,7 @@ from functools import wraps
 
 from . import paths
 from .locking import scope_lock
-from .extractor import (blocked_for_shared, candidate_to_bullet,
+from .extractor import (blocked_for_shared, candidate_to_bullet, version_pairs,
                         fragment_reason, redact_secrets)
 from .store import (MemoryRecord, MemoryStore, ScopeStore, frontmatter_block,
                    normalize_line, slugify_topic, summary_of)
@@ -359,6 +359,45 @@ def display_title(topic: str, text: str) -> str:
     return " ".join(words) or topic
 
 
+def _supersede_stale_versions(cand: dict, scope, scanned: list) -> int:
+    """Drop same-tool older-version bullets a new build fact replaces.
+
+    Toolchains move (3.14 -> 3.15): without this the old and new facts
+    coexist and recall contradicts itself. Only auto-captured bullets are
+    replaced; manual saves are never touched. Returns bullets removed.
+    """
+    if cand.get("kind") != "build":
+        return 0
+    new_pairs = version_pairs(cand.get("text", ""))
+    if not new_pairs:
+        return 0
+    removed = 0
+    for rec in scanned:
+        if rec.source == "manual":
+            continue
+        kept: list[str] = []
+        changed = False
+        for line in rec.content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(BULLET_PREFIXES) and len(stripped) > 4:
+                old_pairs = version_pairs(stripped)
+                if any(tool in new_pairs and ver != new_pairs[tool]
+                       for tool, ver in old_pairs.items()):
+                    changed = True
+                    removed += 1
+                    continue
+            kept.append(line)
+        if changed:
+            target = scope.dir / rec.file
+            target.write_text(_header_of(target) + "\n".join(kept).rstrip() + "\n",
+                              encoding="utf-8")
+            scope.set_file_meta(rec.file, updated=time.time())
+            rec.content = scope.read_record(target).content
+    if removed:
+        scope.refresh_index()
+    return removed
+
+
 @_locked_filing
 def file_candidate(cand: dict, store: MemoryStore,
                    dedupe_threshold: float = 0.85,
@@ -393,6 +432,9 @@ def file_candidate(cand: dict, store: MemoryStore,
             records[scope.scope] = scanned
     else:
         scanned = scope.read_all()
+    # A newer toolchain fact retires the older same-tool bullet first, so
+    # recall never contradicts itself (3.14 vs 3.15). Manual saves exempt.
+    _supersede_stale_versions(cand, scope, scanned)
     # 1. Exact/near duplicate anywhere in scope -> skip (but refresh access).
     for rec in scanned:
         if normalize_line(bullet) in {normalize_line(ln) for ln in rec.content.splitlines() if ln.strip()}:

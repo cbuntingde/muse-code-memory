@@ -12,6 +12,7 @@ This project uses automatic cross-session memory. It captures durable facts on i
 Before answering questions about past work, conventions, decisions, or fixes — or when starting a task in unfamiliar code — recall memory:
 
 - Prefer the `memory_recall` MCP tool with a short query ("test conventions", "deploy process", "why X was chosen"). Use `memory_list` to enumerate topics before diving into files.
+- Before re-scanning the environment (toolchain versions, build/test commands), recall first ("build command", "test setup", "toolchain") — a filed memory beats another scan.
 - Every recall hit and list row carries a read pointer like `personal_project/rule-conventions.md`. Open the full topic with the native `read_memory` tool using exactly that scope and path (`scope="personal_project"`, `path="rule-conventions.md"`) - the pointer is relative to the scope root, which is where the native tool looks. Plugin scopes map to native ones as `global` -> `personal`, `project-personal` -> `personal_project`, `project-shared` -> `project`.
 - Time questions filter by filing date automatically: "what did we complete yesterday", "last Monday's milestone", "last month" (explicit `since`/`until` YYYY-MM-DD when precision matters).
 - Auto-recalled context may already appear in your prompt; use it, and read the full topic file when a snippet matters.
@@ -23,6 +24,7 @@ Hooks capture obvious decisions and fixes automatically, but save explicitly whe
 
 - Use `memory_save` with one clear statement, a topic, scope, and importance 1-5.
 - Save: decisions and why, standing rules ("always/never"), preferences, conventions, root causes and workarounds, durable project facts.
+- After discovering how this project builds or what the toolchain is (versions, commands, manifests), save it in one statement so the next session recalls it instead of re-scanning.
 - Never save: secrets, tokens, credentials, personal data, or ephemeral task state ("currently editing file X"). Pasted keys are dropped at capture time and remaining secret values are auto-redacted before filing.
 - Scope guide: `global` for cross-project user preferences; `project-personal` (default) for this project's working agreements; `project-shared` only for facts the whole team should share (it commits to the repo). Credential-like or high-entropy content is refused outright for `project-shared`, not just redacted.
 

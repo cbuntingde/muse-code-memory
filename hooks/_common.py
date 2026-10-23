@@ -98,12 +98,44 @@ def _collect_strings(node: object, out: list[str], depth: int = 0) -> None:
             _collect_strings(item, out, depth + 1)
 
 
-def tool_text(event: dict) -> tuple[str, str]:
-    """Return (tool_name, combined tool output text) for PostToolUse events.
+# Shell tools take {"command": ...} input (observed live in the session
+# log: args arrive as {"command": ..., "description": ...}, sometimes
+# JSON-encoded). The command is what gives a bare version string meaning,
+# so it is echoed (bounded) ahead of the output. Edit/write tools are
+# deliberately excluded: their inputs are code payloads that previously
+# filed fragments as memories.
+SHELL_COMMAND_TOOLS = frozenset({"powershell", "monitor"})
 
-    Only outputs are mined: tool_input is the agent's own edit/command
-    payload (code and JSON), not durable prose, and mining it filed code
-    fragments as memories. Structured outputs contribute their prose-like
+
+def _shell_command(event: dict) -> str:
+    """Shell command from a hook event, or "" when absent.
+
+    Only a real {"command": ...} mapping (or its JSON-encoded form)
+    counts: bare strings could be paths or prose, not invocations.
+    """
+    for key in ("tool_input", "input"):
+        val = event.get(key)
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except ValueError:
+                continue
+            if not isinstance(val, dict):
+                continue
+        if isinstance(val, dict):
+            for cmd_key in ("command", "cmd"):
+                cmd = val.get(cmd_key)
+                if isinstance(cmd, str) and cmd.strip():
+                    return " ".join(cmd.split())[:500]
+    return ""
+
+
+def tool_text(event: dict) -> tuple[str, str]:
+    """Return (tool_name, combined tool text) for PostToolUse events.
+
+    Only outputs are mined, plus the invoking shell command for shell tools:
+    Edit/write tool inputs are skipped: they hold authored code and JSON,
+    not durable prose. Structured outputs contribute their prose-like
     string leaves instead of serialized JSON.
     """
     name = str(event.get("tool_name", ""))
@@ -116,7 +148,15 @@ def tool_text(event: dict) -> tuple[str, str]:
             leaves: list[str] = []
             _collect_strings(val, leaves)
             parts.extend(leaves)
-    return name, "\n".join(parts)
+    text = "\n".join(parts)
+    lowered = name.lower()
+    if lowered in SHELL_COMMAND_TOOLS or lowered.endswith("powershell"):
+        cmd = _shell_command(event)
+        if cmd:
+            text = (f"shell command `{cmd}` produced output:\n{text}"
+                    if text.strip()
+                    else f"shell command `{cmd}` produced no output")
+    return name, text
 
 
 def log_diagnostic(message: str) -> None:

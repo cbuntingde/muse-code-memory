@@ -126,5 +126,42 @@ class ExtractorTest(unittest.TestCase):
         self.assertGreaterEqual(cands[0]["importance"], 3)
 
 
+    def test_build_command_captured(self) -> None:
+        cands = extractor.extract_candidates(
+            "Run the suite with python3 -m unittest discover -s tests before merging.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "build")
+        self.assertGreaterEqual(cands[0]["importance"], 4)
+
+    def test_toolchain_version_check_captured(self) -> None:
+        cands = extractor.extract_candidates(
+            "shell command `python3 --version` produced output: Python 3.14.0")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "build")
+        self.assertGreaterEqual(cands[0]["importance"], 4)
+
+    def test_manifest_build_fact_captured(self) -> None:
+        cands = extractor.extract_candidates(
+            "The build config lives in pyproject.toml and requires Python 3.9.")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "build")
+
+    def test_tool_listing_without_verbs_not_captured(self) -> None:
+        self.assertEqual(extractor.extract_candidates(
+            "d----- hooks d----- muse_memory -a---- pyproject.toml -a---- README.md"), [])
+
+
+    def test_raw_manifest_dump_not_captured(self) -> None:
+        self.assertEqual(extractor.extract_candidates(
+            "[project] name = \"muse-memory\" version = \"1.1.0\" "
+            "requires-python = \">=3.9\" dependencies = []"), [])
+
+    def test_json_payload_with_build_words_not_captured(self) -> None:
+        self.assertEqual(extractor.extract_candidates(
+            "{\"tool\": \"powershell\", \"command\": \"npm test\", "
+            "\"output\": \"ok\"} with additional padding words to reach "
+            "the length floor"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

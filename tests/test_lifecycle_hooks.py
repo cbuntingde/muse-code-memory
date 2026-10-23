@@ -183,6 +183,124 @@ class HookContractTest(IsolatedCase):
             self.assertEqual(proc.returncode, 0, name)
 
 
+class ShellCommandTest(unittest.TestCase):
+    def _tool_text(self, event):
+        sys.path.insert(0, str(ROOT / "hooks"))
+        import _common
+        return _common.tool_text(event)
+
+    def test_json_encoded_tool_input_yields_command(self) -> None:
+        from muse_memory import extractor
+        _name, text = self._tool_text({
+            "tool_name": "powershell",
+            "tool_input": json.dumps({"command": "python3 --version",
+                                      "description": "check toolchain"}),
+            "tool_result": "Python 3.14.0"})
+        self.assertIn("python3 --version", text)
+        cands = extractor.extract_candidates(text, source="tool")
+        self.assertTrue(cands)
+        self.assertEqual(cands[0]["kind"], "build")
+
+    def test_bare_string_input_is_not_command_context(self) -> None:
+        _name, text = self._tool_text({
+            "tool_name": "powershell",
+            "tool_input": "just some prose",
+            "tool_result": "Python 3.14.0"})
+        self.assertNotIn("shell command", text)
+
+
+class BuildMemoryTest(IsolatedCase):
+    """Environment/build discovery must file promptly and recall next time."""
+
+    def _run_hook(self, name: str, event: dict) -> tuple[int, str, str]:
+        import os
+        env = {"XDG_DATA_HOME": str(self.data_home),
+               "XDG_CONFIG_HOME": str(self.config_home),
+               "PATH": os.environ.get("PATH", ""),
+               "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+               "USERPROFILE": os.environ.get("USERPROFILE", ""),
+               "HOMEDRIVE": os.environ.get("HOMEDRIVE", ""),
+               "HOMEPATH": os.environ.get("HOMEPATH", ""),
+               "TEMP": os.environ.get("TEMP", ""),
+               "TMP": os.environ.get("TMP", "")}
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "hooks" / name)],
+            input=json.dumps(event), capture_output=True, text=True,
+            timeout=60, env={k: v for k, v in env.items() if v},
+            cwd=str(ROOT))
+        return proc.returncode, proc.stdout, proc.stderr
+
+    def test_version_check_queues_build_candidate(self) -> None:
+        code, out, _ = self._run_hook("post_tool_use.py", {
+            "hook_event_name": "PostToolUse", "session_id": "abc",
+            "cwd": str(self.work), "tool_name": "powershell",
+            "tool_input": {"command": "python3 --version"},
+            "tool_result": "Python 3.14.0"})
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "")
+        scope = MemoryStore(self.work).get_scope("project-personal")
+        assert scope is not None
+        pending = (scope.dir / ".pending.jsonl").read_text(encoding="utf-8")
+        self.assertIn("python3 --version", pending)
+
+    def test_build_kind_files_without_approval(self) -> None:
+        store = MemoryStore(self.work)
+        lifecycle.queue_candidates(
+            [{"text": "Tests run with python3 -m unittest discover -s tests.",
+              "kind": "build", "topic": "build-test", "importance": 3,
+              "tags": ["project", "build"], "scope": "project-personal",
+              "source": "tool", "session_id": ""}], store)
+        report = lifecycle.stop_checkpoint(self.work, "")
+        self.assertEqual(report.get("filed"), 1)
+        self.assertEqual(report.get("proposals_held"), 0)
+
+    def test_build_memory_recalls_next_session(self) -> None:
+        from muse_memory.service import MemoryService
+        self.test_version_check_queues_build_candidate()
+        report = lifecycle.stop_checkpoint(self.work, "")
+        self.assertGreaterEqual(report.get("filed", 0), 1)
+        _cleaned, _since, _until, hits = MemoryService(self.work).recall(
+            "how do I build and test this project")
+        self.assertTrue(hits)
+        top = (hits[0].title + " " + hits[0].text).lower()
+        self.assertIn("python", top)
+
+    def test_stop_mines_recent_assistant_text(self) -> None:
+        from muse_memory import paths
+        day = (paths.muse_data_dir() / "sessions" / "2026" / "05" / "07"
+               / "sess-mine")
+        day.mkdir(parents=True)
+        (day / "session.jsonl").write_text(json.dumps(
+            {"payload": {"type": "text", "text":
+                         "We decided to use Postgres for session storage "
+                         "going forward in this project."}}) + "\n",
+            encoding="utf-8")
+        report = lifecycle.stop_checkpoint(self.work, "sess-mine")
+        self.assertGreaterEqual(report.get("filed", 0), 1)
+        scope = MemoryStore(self.work).get_scope("project-personal")
+        assert scope is not None
+        blob = "\n".join(r.content for r in scope.read_all())
+        self.assertIn("Postgres", blob)
+
+    def test_session_start_surfaces_build_memory(self) -> None:
+        event = {"hook_event_name": "SessionStart", "session_id": "abc",
+                 "cwd": str(self.work)}
+        _code, out, _err = self._run_hook("session_start.py", event)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("Build:", ctx)
+        scope = MemoryStore(self.work).get_scope("project-personal")
+        assert scope is not None
+        scope.write_topic(
+            "build-and-test",
+            "# Build and Test\n\n"
+            "- Run the suite with python3 -m unittest discover -s tests.\n",
+            meta={"importance": 4, "tags": ["project", "build"]})
+        _code, out, _err = self._run_hook("session_start.py", event)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Build:", ctx)
+        self.assertIn("unittest", ctx)
+
+
 class McpServerTest(IsolatedCase):
     def test_tool_save_returns_confirmation(self) -> None:
         from mcp.server import tool_save  # noqa: E402

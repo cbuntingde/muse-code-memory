@@ -40,6 +40,25 @@ def main(event: dict) -> None:
                           if ln.strip().startswith(("- ", "* "))),
                          rec.title)
             lines.append(f"  - {rec.title}: {first[2:120]}")
+    # One build line when a build memory exists: agents that skip recall
+    # still see how to build without re-scanning the environment.
+    build_best: tuple | None = None
+    for name in ("global", "project-personal", "project-shared"):
+        scope = store.get_scope(name)
+        if scope is None:
+            continue
+        for rec in scope.read_all():
+            if "build" in (rec.tags or []):
+                key = (-rec.importance, rec.title)
+                if build_best is None or key < build_best[0]:
+                    first = next((ln.strip() for ln in rec.content.splitlines()
+                                  if ln.strip().startswith(("- ", "* "))),
+                                 rec.title)
+                    snippet = (first[2:120] if first[:2] in ("- ", "* ")
+                               else first[:120])
+                    build_best = (key, rec.title, snippet)
+    if build_best is not None:
+        lines.append(f"Build: {build_best[1]}: {build_best[2]}")
     total_files = sum(counts.values())
     if total_files == 0:
         lines.append("(no memories stored yet — durable facts will be captured "

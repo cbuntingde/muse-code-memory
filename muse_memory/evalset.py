@@ -23,6 +23,10 @@ _RECORDS = [
      "# Pasta recipe\n\n- Boil pasta water with plenty of salt first.\n", 2),
     ("release-checklist.md", "Release checklist",
      "# Release checklist\n\n- Tag the release, build the wheel, publish notes.\n", 3),
+    ("build-and-test.md", "Build and test",
+     "# Build and test\n\n- Run the suite with python3 -m unittest discover -s tests.\n", 4),
+    ("toolchain.md", "Toolchain",
+     "# Toolchain\n\n- Toolchain is Python 3.14 with PowerShell 7.5.\n", 4),
 ]
 
 _QUERIES = [
@@ -32,6 +36,8 @@ _QUERIES = [
     ("editor keybindings indent preference", "editor-preference.md"),
     ("how to cook pasta", "pasta-recipe.md"),
     ("release tag wheel publish", "release-checklist.md"),
+    ("what command runs the tests", "build-and-test.md"),
+    ("which python version do we use", "toolchain.md"),
 ]
 
 _CAPTURE = [
@@ -41,6 +47,9 @@ _CAPTURE = [
     ("Fixed the login crash; root cause was an expired token cache.", True),
     ("Thanks, that looks great, let me check the other thing now.", False),
     ("Lorem ipsum placeholder text for the mockup page layout.", False),
+    ("Run the tests with python3 -m unittest discover -s tests.", True),
+    ("The toolchain is Python 3.14 and PowerShell 7.5 for this repo.", True),
+    ("Make dinner after the deploy freeze lifts.", False),
 ]
 
 

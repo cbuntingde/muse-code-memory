@@ -139,5 +139,38 @@ class ConsolidateTest(IsolatedCase):
                                        "project-shared"})
 
 
+    def test_stale_toolchain_version_superseded(self) -> None:
+        store = MemoryStore(self.work)
+        store.ensure_all()
+        cons.file_candidate(cand(
+            "Toolchain is Python 3.14 for this repo.",
+            kind="build", topic="build-toolchain", importance=4,
+            tags=["project", "build"]), store)
+        cons.file_candidate(cand(
+            "Upgraded the toolchain to Python 3.15 for the test suite.",
+            kind="build", topic="build-toolchain", importance=4,
+            tags=["project", "build"]), store)
+        scope = store.get_scope("project-personal")
+        assert scope is not None
+        bodies = [r.content for r in scope.read_all()]
+        self.assertFalse(any("3.14" in b for b in bodies))
+        self.assertTrue(any("3.15" in b for b in bodies))
+
+    def test_different_tool_versions_coexist(self) -> None:
+        store = MemoryStore(self.work)
+        store.ensure_all()
+        cons.file_candidate(cand(
+            "Toolchain is Python 3.14 for this repo.",
+            kind="build", importance=4), store)
+        cons.file_candidate(cand(
+            "Node 24 runs the frontend checks in this repo today.",
+            kind="build", importance=4), store)
+        scope = store.get_scope("project-personal")
+        assert scope is not None
+        blob = "\n".join(r.content for r in scope.read_all())
+        self.assertIn("3.14", blob)
+        self.assertIn("24", blob)
+
+
 if __name__ == "__main__":
     unittest.main()

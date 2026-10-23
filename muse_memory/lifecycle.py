@@ -16,6 +16,11 @@ from .locking import scope_lock
 
 TRANSCRIPT_TAIL_BYTES = 200_000
 
+# Stop-hook transcript window: one bounded tail read per turn. Enough for
+# the agent's latest synthesis ("project uses X"), far below SessionEnd's
+# full-tail mine; a single sequential read plus regex scan per Stop.
+STOP_TRANSCRIPT_BYTES = 32_768
+
 
 RECENT_DAY_SCAN_MAX = 60
 
@@ -255,7 +260,7 @@ def _proposal_eligible(cand: dict, auto_file_importance: int | None,
         return True
     if cand.get("source") == "manual":
         return True
-    if cand.get("kind") in ("rule", "decision"):
+    if cand.get("kind") in ("rule", "decision", "build"):
         return True
     try:
         return int(cand.get("importance", 3)) >= auto_file_importance
@@ -274,7 +279,7 @@ def file_pending(store: MemoryStore, max_items: int = 200,
     Proposal policy (when auto_file_importance is set): auto-captured
     candidates below the threshold stay queued as proposals until they
     expire after proposal_ttl_days or are filed with approve_all. Manual
-    saves, rules, and decisions always file.
+    saves, rules, decisions, and build/toolchain facts always file.
     """
     actions: dict[str, int] = {}
     files: list[str] = []
@@ -375,6 +380,29 @@ def stop_checkpoint(cwd: str | os.PathLike | None = None,
     store = MemoryStore(cwd)
     store.ensure_all()
     drain_access(store)
+    # Mine the session tail for the agent's latest synthesis (decisions,
+    # toolchain, conventions): PostToolUse sees tool outputs, not the
+    # agent's own conclusions, so without this a discovery waits until
+    # SessionEnd before the next turn can recall it. Bounded: one small
+    # tail read, few candidates, same importance gate as SessionEnd.
+    if (cfg.get("capture_enabled", True)
+            and cfg.get("session_consolidation", True) and session_id):
+        transcript_file = find_session_file(session_id)
+        if transcript_file is not None:
+            try:
+                recent = tail_transcript_text(
+                    transcript_file, max_bytes=STOP_TRANSCRIPT_BYTES)
+            except OSError:
+                recent = ""
+            if recent.strip():
+                mined = extractor.extract_candidates(
+                    recent, source="session", session_id=session_id,
+                    default_scope=cfg["default_scope"], max_candidates=3)
+                min_imp = int(cfg.get("capture_min_importance", 2))
+                mined = [c for c in mined
+                         if int(c.get("importance", 3)) >= min_imp]
+                if mined:
+                    queue_candidates(mined, store, int(cfg["max_pending"]))
     limit = min(int(cfg.get("max_pending", 200)), STOP_DRAIN_MAX)
     report = file_pending(
         store, limit, float(cfg['dedupe_threshold']),

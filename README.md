@@ -75,10 +75,10 @@ SessionEnd          -> mine transcript tail, file proposals, full maintenance
 ```
 
 Capture is heuristic and precision-biased: explicit decisions, always/never rules,
-preferences, fixes, milestones, and project changes (everyday build verbs only
+preferences, fixes, milestones, project changes, and procedural build/toolchain facts (build/test commands, version checks, manifest statements; everyday build verbs only
 with project context; stack statements and dev-doc/plan paths auto-file). Chatter and task-local detail are ignored, and tool
 payloads — JSON dumps, patch bodies, line-numbered dumps, escaped text, terminal
-mojibake, session-log paths — are rejected at extraction time, so raw code and
+mojibake, session-log paths — are rejected at extraction time (for shell tools the invoking command is still echoed ahead of the output, so bare version strings stay meaningful), so raw code and
 logs never become memory files. Legacy fragments already on disk are retired to
 `archive/` automatically at the next session end (SessionStart is read-only).
 Pasted credentials are dropped at capture time and remaining secret values are

@@ -13,6 +13,30 @@ from __future__ import annotations
 
 import re
 
+# Shared tool+version matcher, also used for staleness checks: the
+# RULE_PATTERNS entry below references this exact object so capture and
+# supersede can never drift apart.
+_TOOL_VERSION_RE = re.compile(
+    r"(?<![\w-])(python(?:3(?:\.\d+)?)?|node(?:\.js)?|npm|cargo|rustc|"
+    r"powershell|dotnet|java)\b.{0,30}\b(v?\d+\.\d+[\w.+-]*)\b.{0,60}", re.I)
+
+
+def version_pairs(text: str) -> dict[str, str]:
+    """Normalized tool -> version pairs mentioned in text.
+
+    Used to retire stale toolchain facts (Python 3.14 -> 3.15) when a newer
+    build fact is filed. "python3"/"node.js" normalize to "python"/"node".
+    """
+    pairs: dict[str, str] = {}
+    for m in _TOOL_VERSION_RE.finditer(text or ""):
+        tool = m.group(1).lower()
+        if tool.endswith(".js"):
+            tool = tool[:-3]
+        tool = re.sub(r"[\d.]+$", "", tool)
+        pairs[tool] = m.group(2)
+    return pairs
+
+
 # (pattern, kind, base_importance, tags)
 RULE_PATTERNS: list[tuple[re.Pattern, str, int, list[str]]] = [
     (re.compile(r"\b(always|never|must|must not|don't|do not)\b.{0,120}", re.I),
@@ -46,6 +70,35 @@ RULE_PATTERNS: list[tuple[re.Pattern, str, int, list[str]]] = [
     (re.compile(r"\b(dev docs|development docs|design docs?|documentation|plan|roadmap|spec|blueprint|design doc)\b"
                 r".{0,80}([\w./-]+\.md\b|docs?/[\w./-]+)", re.I),
      "project-docs", 4, ["project", "change"]),
+    # Procedural environment knowledge: how this machine/project builds,
+    # tests, and runs. Mirrors the semantic/procedural split in commercial
+    # agent memory (LangMem, Letta): toolchain and build facts file promptly
+    # so the next session recalls instead of re-scanning. Importance 4
+    # auto-files at Stop/SessionEnd instead of expiring as a proposal. Tight
+    # by construction (exact command/version tokens), so everyday prose
+    # ("make dinner", "go now") still matches nothing.
+    (re.compile(r"\b(python3?(?:\.exe)?\s+-m\s+(?:unittest|pytest|build)|"
+                r"unittest\s+discover|pytest\b|"
+                r"npm\s+(?:run\s+)?(?:build|test|start|ci)|npx\s+\S+|"
+                r"cargo\s+(?:build|test|check|run|clippy)|"
+                r"go\s+(?:build|test|run|vet)|"
+                r"dotnet\s+(?:build|test|run)|"
+                r"gradle(?:w)?\s+(?:build|test)|"
+                r"make\s+(?:build|test|check|all|clean|install))\b.{0,80}", re.I),
+     "build", 4, ["project", "build"]),
+    (re.compile(r"\b(python3?|python|node|npm|cargo|rustc|go|java|dotnet|powershell)"
+                r"(\s+--version|\s+-V|\s+version)\b.{0,60}", re.I),
+     "build", 4, ["project", "build"]),
+    (_TOOL_VERSION_RE, "build", 4, ["project", "build"]),
+    (re.compile(r"\b(pyproject\.toml|package\.json|Cargo\.toml|Cargo\.lock|go\.mod|"
+                r"Makefile|requirements\.txt|pom\.xml|build\.gradle|CMakeLists\.txt|"
+                r"package-lock\.json)\b.{0,60}"
+                r"\b(uses?|requires?|defines?|configures?|builds?|runs?|contains?|"
+                r"lives?|declared?|specified|listed)\b"
+                r"|\b(build|test|run|install|project)\b.{0,40}"
+                r"\b(pyproject\.toml|package\.json|Cargo\.toml|go\.mod|Makefile|"
+                r"requirements\.txt|pom\.xml|build\.gradle|CMakeLists\.txt)\b", re.I),
+     "build", 4, ["project", "build"]),
     (re.compile(r"\b(uses?|runs? on|requires?|depends on)\s+[A-Z][\w.+-]*(?:\s+\d[\w.]*)?", re.I),
      "fact", 2, ["fact"]),
 ]
