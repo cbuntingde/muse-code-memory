@@ -106,8 +106,11 @@ class PathsTest(IsolatedCase):
 
     def test_shared_dir_inside_repo(self) -> None:
         (self.work / ".git").mkdir()
-        self.assertEqual(paths.shared_project_dir(self.work),
-                         self.work / ".agents" / "memory")
+        # realpath: TEMP may use an 8.3 short name (RUNNER~1) while
+        # resolution returns the long form; same directory either way.
+        self.assertEqual(
+            os.path.realpath(paths.shared_project_dir(self.work)),
+            os.path.realpath(self.work / ".agents" / "memory"))
 
 
 if __name__ == "__main__":
