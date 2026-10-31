@@ -10,7 +10,7 @@ from typing import Iterable
 
 from . import config as config_mod
 from . import consolidate as cons
-from . import extractor, paths
+from . import entities, extractor, paths
 from .store import MemoryStore
 from .locking import scope_lock
 
@@ -262,6 +262,10 @@ def _proposal_eligible(cand: dict, auto_file_importance: int | None,
         return True
     if cand.get("kind") in ("rule", "decision", "build"):
         return True
+    if entities.is_entity_kind(cand.get("kind")):
+        # Project facts (profile, commands, files) file promptly instead
+        # of expiring as proposals: they are the working set, not trivia.
+        return True
     try:
         return int(cand.get("importance", 3)) >= auto_file_importance
     except (TypeError, ValueError):
@@ -422,3 +426,79 @@ def stop_checkpoint(cwd: str | os.PathLike | None = None,
             "proposals_held": report.get("proposals_held", 0),
             "proposals_expired": report.get("proposals_expired", 0),
             "retired_for_cap": retired}
+
+
+# -- project entities -----------------------------------------------------------
+
+
+def tool_entity_candidates(*, command: str = "", files=(),
+                           text: str = "", cwd=None,
+                           scope: str = "project-personal") -> list[dict]:
+    """Entity candidates from one tool event (side-effect free).
+
+    Shell invocations worth remembering, files the tool authored, and
+    project files named in prose. Filing happens at Stop/SessionEnd
+    through the normal pending queue.
+    """
+    out: list[dict] = []
+    if command and entities.is_noteworthy_command(command):
+        canonical = entities.canonical_command(command)
+        out.append({
+            "text": f"Build command for this project: `{canonical}`.",
+            "kind": "project-command", "command": canonical,
+            "topic": "command-ledger", "importance": 4,
+            "tags": ["project", "build"], "scope": scope,
+            "source": "tool", "session_id": "", "cwd": str(cwd or "")})
+    seen: set[str] = set()
+    for path in list(files)[:3]:
+        rel = entities.relative_path(str(path), cwd)
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        out.append({
+            "text": f"Important project file: `{rel}`.",
+            "kind": "project-file", "path": rel, "note": "",
+            "topic": "file-registry", "importance": 4,
+            "tags": ["project", "change"], "scope": scope,
+            "source": "tool", "session_id": "", "cwd": str(cwd or "")})
+    for path, note in entities.extract_file_mentions(text):
+        rel = entities.relative_path(path, cwd)
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        out.append({
+            "text": f"Important project file: `{rel}` - {note[:140]}.",
+            "kind": "project-file", "path": rel, "note": note[:140],
+            "topic": "file-registry", "importance": 4,
+            "tags": ["project", "change"], "scope": scope,
+            "source": "tool", "session_id": "", "cwd": str(cwd or "")})
+    return out
+
+
+def session_start_entities(store: MemoryStore, cfg: dict) -> dict:
+    """Queue a profile scan when missing or stale; render the working set.
+
+    Read-only wrt topics/metadata/index: the scan only queues a
+    candidate, which Stop/SessionEnd files through the normal policy.
+    """
+    queued = 0
+    if (cfg.get("entity_sync_enabled", True)
+            and cfg.get("capture_enabled", True)):
+        scope = (store.get_scope("project-personal") or store.get_scope(
+            cfg.get("default_scope", "project-personal")))
+        if scope is not None and entities.needs_profile_sync(scope,
+                                                             store.cwd):
+            queued = queue_candidates([{
+                "text": "Project profile auto-scan for this workspace.",
+                "kind": "project-profile", "topic": "project-profile",
+                "importance": 4, "tags": ["project", "profile"],
+                "scope": scope.scope, "source": "tool", "session_id": "",
+                "cwd": str(store.cwd)}], store)
+    block = ""
+    if cfg.get("entity_sync_enabled", True):
+        scope = store.get_scope("project-personal")
+        if scope is not None:
+            block = entities.working_set_text(
+                scope, store.cwd,
+                int(cfg.get("working_set_max_chars", 1200)))
+    return {"queued": queued, "block": block}

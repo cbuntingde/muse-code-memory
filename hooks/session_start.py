@@ -16,6 +16,7 @@ from _common import emit_context, event_cwd, run
 
 def main(event: dict) -> None:
     from muse_memory import config as config_mod
+    from muse_memory import lifecycle as lifecycle_mod
     from muse_memory.store import MemoryStore
 
     cwd = event_cwd(event)
@@ -59,6 +60,10 @@ def main(event: dict) -> None:
                     build_best = (key, rec.title, snippet)
     if build_best is not None:
         lines.append(f"Build: {build_best[1]}: {build_best[2]}")
+    sync = lifecycle_mod.session_start_entities(store, cfg)
+    if sync["block"]:
+        lines.append("")
+        lines.append(sync["block"])
     total_files = sum(counts.values())
     if total_files == 0:
         lines.append("(no memories stored yet — durable facts will be captured "

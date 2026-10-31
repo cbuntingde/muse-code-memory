@@ -7,8 +7,12 @@ tests/test_eval_golden.py and by `python3 -m muse_memory eval`.
 
 from __future__ import annotations
 
-from . import extractor, rag
-from .store import MemoryRecord
+import os
+import tempfile
+from pathlib import Path
+
+from . import entities, extractor, rag
+from .store import MemoryRecord, MemoryStore
 
 _RECORDS = [
     ("deploy-process.md", "Deploy process",
@@ -90,3 +94,108 @@ def run_eval() -> dict:
         "queries": details,
         "capture_counts": {"tp": tp, "fp": fp, "fn": fn},
     }
+
+
+_PROJECT_QUERIES = [
+    ("how do I run the test suite", "command-ledger.md"),
+    ("what command runs the build", "command-ledger.md"),
+    ("where is auth login", "file-registry.md"),
+    ("which file documents the api", "file-registry.md"),
+    ("what stack is this project", "project-profile.md"),
+]
+
+_PROJECT_CAPTURE = [
+    ("The auth middleware lives in src/auth.py and handles login.", True, "file"),
+    ("API details are documented in docs/api.md for integrators.", True, "file"),
+    ("Run the suite with npm test before pushing.", True, "command"),
+    ("I added sugar to coffee and added milk too, tasty.", False, "file"),
+    ("Make dinner after the deploy freeze lifts.", False, "command"),
+    ("Thanks, that looks great, let me check it later.", False, "file"),
+]
+
+
+def _seed_project_store(work: Path) -> MemoryStore:
+    """Fixture workspace with manifests, docs, and seeded entities."""
+    (work / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\n', encoding="utf-8")
+    (work / "README.md").write_text("# Demo\n", encoding="utf-8")
+    remote = work / ".git" / "config"
+    remote.parent.mkdir(parents=True, exist_ok=True)
+    remote.write_text('[remote "origin"]\n\turl = example/demo.git\n',
+                      encoding="utf-8")
+    (work / "src").mkdir(exist_ok=True)
+    (work / "src" / "auth.py").write_text("# auth\n", encoding="utf-8")
+    (work / "docs").mkdir(exist_ok=True)
+    (work / "docs" / "api.md").write_text("# API\n", encoding="utf-8")
+    store = MemoryStore(work)
+    store.ensure_all()
+    scope = store.get_scope("project-personal")
+    assert scope is not None
+    entities.ensure_profile(scope, work)
+    entities.note_command(scope, "npm test", work)
+    entities.note_command(scope, "python3 -m pytest", work)
+    entities.note_file(scope, "src/auth.py",
+                        "auth middleware handles login", work)
+    entities.note_file(scope, "docs/api.md",
+                        "API details for integrators", work)
+    return store
+
+
+def run_project_eval() -> dict:
+    """Recall/capture quality for project facts, on a seeded workspace.
+
+    Hermetic: XDG homes are pointed at a temp dir and restored, so the
+    eval never touches real memory stores.
+    """
+    saved = {key: os.environ.get(key)
+             for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME")}
+    tmp = tempfile.TemporaryDirectory(prefix="muse-mem-eval-")
+    try:
+        os.environ["XDG_DATA_HOME"] = str(Path(tmp.name) / "data")
+        os.environ["XDG_CONFIG_HOME"] = str(Path(tmp.name) / "config")
+        work = Path(tmp.name) / "work"
+        work.mkdir()
+        store = _seed_project_store(work)
+        scope = store.get_scope("project-personal")
+        assert scope is not None
+        idx = rag.RagIndex()
+        idx.build(scope.read_all())
+        top1 = at3 = 0
+        details = []
+        for query, expected in _PROJECT_QUERIES:
+            hits = idx.search(query, top_k=3)
+            files = [h.file for h in hits]
+            if files and files[0] == expected:
+                top1 += 1
+            if expected in files:
+                at3 += 1
+            details.append({"query": query, "expected": expected,
+                            "got": files})
+        tp = fp = fn = 0
+        for text, expected, flavor in _PROJECT_CAPTURE:
+            if flavor == "file":
+                got = bool(entities.extract_file_mentions(text))
+            else:
+                got = entities.is_noteworthy_command(text)
+            if got and expected:
+                tp += 1
+            elif got and not expected:
+                fp += 1
+            elif not got and expected:
+                fn += 1
+        n = len(_PROJECT_QUERIES)
+        return {
+            "recall_top1": top1 / n if n else 0.0,
+            "recall_at3": at3 / n if n else 0.0,
+            "capture_precision": tp / (tp + fp) if (tp + fp) else 1.0,
+            "capture_recall": tp / (tp + fn) if (tp + fn) else 1.0,
+            "queries": details,
+            "capture_counts": {"tp": tp, "fp": fp, "fn": fn},
+        }
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        tmp.cleanup()

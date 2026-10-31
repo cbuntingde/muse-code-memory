@@ -2,6 +2,7 @@
   "$comment": "Copy to ~/.config/muse/memory/config.json (user) or <repo>/.muse/memory.json (project). All keys optional; unset keys use built-in defaults. Advanced keys are still accepted but no longer documented here: capture_tool_result_max_chars, capture_min_importance, max_pending, dedupe_threshold, merge_threshold, stale_days, scopes.",
   "recall_top_k": 5,
   "recall_max_chars": 4000,
+  "working_set_max_chars": 1200,
   "min_score": 0.05,
   "capture_enabled": true,
   "capture_auto_file_importance": 4,
@@ -9,5 +10,6 @@
   "max_files_per_scope": 40,
   "max_chars_per_file": 12000,
   "auto_cleanup": true,
+  "entity_sync_enabled": true,
   "default_scope": "project-personal"
 }

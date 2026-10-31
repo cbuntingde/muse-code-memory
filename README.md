@@ -10,6 +10,12 @@ captured automatically, recalled with built-in retrieval, and maintained without
   code fragments rejected), failures recorded, transcripts mined. Captures queue as
   proposals: rules, decisions, and importance-4+ facts file at Stop/SessionEnd, the
   rest are held for `/approve` and expire after 7 days (`proposal_ttl_days`)
+- **Project entities** — shell build/test commands, authored files, and
+  project files named in prose are stored verbatim in pinned topics
+  (command ledger, file registry), and each workspace gets an auto-scanned
+  profile (stack, manifests, docs, remote). Entity facts always file at
+  Stop/SessionEnd instead of expiring as proposals, and the profile plus
+  recent commands/files are injected at every prompt, not only on recall hits.
 - **Built-in RAG** — SQLite FTS5 BM25 retrieval (stdlib `sqlite3`, lexical + recency +
   importance + use signals) over a disposable per-scope `.rag-index.db`, rebuilt from
   the Markdown topics whenever they change; works offline in hook context, with an
@@ -29,7 +35,8 @@ Muse 1.4.7: marketplace update, upgrade, a headless-session `memory_save` /
 `memory_recall` round-trip, a second session recalling the first session's save, and
 uninstall + reinstall (see AUDIT.md). The golden evaluation (`python3 -m muse_memory
 eval`) reports recall@1, recall@3, capture precision, and capture recall at 1.0 on its
-frozen corpus.
+frozen corpus, plus a project-facts corpus (files, docs, commands, profile)
+also at 1.0.
 
 ## Install
 
@@ -65,9 +72,11 @@ then `muse plugins update muse-memory`. Restart `muse` afterwards so hooks load.
 ## How it works
 
 ```
-SessionStart        -> ensure stores, inject digest (read-only: no sweeps, no index writes)
-UserPromptSubmit    -> RAG recall over all scopes, inject top hits; use signals queued
-PostToolUse         -> extract candidates from tool outputs (fragments rejected), queue
+SessionStart        -> ensure stores, inject digest + project working set;
+                       queue a profile scan when missing (read-only: no sweeps, no index writes)
+UserPromptSubmit    -> working-set block + RAG recall over all scopes; use signals queued
+PostToolUse         -> extract candidates from tool outputs (fragments rejected), queue;
+                       shell commands, authored files, and named project files queue as entities
 PostToolUseFailure  -> same with importance boost + redacted error fallback
 PreCompact          -> snapshot key topics so compaction cannot lose them
 Stop                -> apply use signals, file high-confidence proposals, enforce file cap
@@ -93,7 +102,10 @@ counts, plus dotfile sidecars (`.memory-meta.json`, `.rag-index.db`,
 `.pending.jsonl`, `.access.jsonl`, `.snapshot-*`, `archive/`, `.trash/`). The project-personal scope adopts
 Muse's native slug directory when one already exists, so both systems share
 files instead of forking. Machine truth lives in the sidecars; topic bodies
-roundtrip byte-identically.
+roundtrip byte-identically. Three pinned topics (`project-profile.md`,
+`command-ledger.md`, `file-registry.md`) hold the project working set in the
+project scopes; pins win index slots and skip auto-retirement, while the
+standard size trim still bounds their growth.
 
 ## Agent surface
 

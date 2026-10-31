@@ -100,6 +100,35 @@ class MemoryService:
             top_k=int(top_k or self.cfg["recall_top_k"]),
             since=since_ts, until=until_ts)
 
+    # -- project working set ------------------------------------------------
+    def working_set(self, max_chars: int | None = None) -> dict:
+        """Working-set block plus provenance files for use signals.
+
+        Read-only: callers queue access signals themselves instead of
+        touching topic metadata on this hot path.
+        """
+        from . import entities
+        if max_chars is None:
+            max_chars = self.cfg.get("working_set_max_chars", 1200)
+        limit = int(max_chars)
+        blocks: list[str] = []
+        provenance: list[tuple[str, str]] = []
+        for name in ("project-personal", "project-shared"):
+            scope = self.store.get_scope(name)
+            if scope is None:
+                continue
+            text = entities.working_set_text(scope, self.store.cwd, limit)
+            if not text:
+                continue
+            blocks.append(text)
+            for filename in entities.managed_files(scope):
+                provenance.append((name, filename))
+        combined = "\n".join(blocks)
+        if len(combined) > limit:
+            cut = combined.rfind("\n", 0, limit)
+            combined = combined[:cut] if cut > 0 else combined[:limit]
+        return {"text": combined, "files": provenance}
+
     # -- save -----------------------------------------------------------
     def save(self, text: str, topic: str | None = None,
              scope: str | None = None, importance: int = 3,

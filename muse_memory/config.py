@@ -15,6 +15,7 @@ DEFAULTS: dict[str, Any] = {
     "recall_top_k": 5,
     "recall_max_chars": 4000,
     "session_start_max_chars": 2500,
+    "working_set_max_chars": 1200,
     "min_score": 0.05,
     # Capture
     "capture_enabled": True,
@@ -31,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "merge_threshold": 0.72,
     "stale_days": 90,
     "session_consolidation": True,
+    "entity_sync_enabled": True,
     "auto_cleanup": True,
     # Scopes
     "scopes": ["global", "project-personal", "project-shared"],
@@ -45,6 +47,7 @@ _CONSTRAINTS: dict[str, tuple[str, float | None, float | None]] = {
     "recall_top_k": ("int", 1, 20),
     "recall_max_chars": ("int", 200, 100000),
     "session_start_max_chars": ("int", 200, 50000),
+    "working_set_max_chars": ("int", 0, 50000),
     "min_score": ("float", 0.0, 100.0),
     "capture_enabled": ("bool", None, None),
     "capture_tool_result_max_chars": ("int", 200, 200000),
@@ -58,6 +61,7 @@ _CONSTRAINTS: dict[str, tuple[str, float | None, float | None]] = {
     "merge_threshold": ("float", 0.0, 1.0),
     "stale_days": ("int", 1, 3650),
     "session_consolidation": ("bool", None, None),
+    "entity_sync_enabled": ("bool", None, None),
     "auto_cleanup": ("bool", None, None),
 }
 

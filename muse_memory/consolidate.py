@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from functools import wraps
 
+from . import entities
 from . import paths
 from .locking import scope_lock
 from .extractor import (blocked_for_shared, candidate_to_bullet, version_pairs,
@@ -413,6 +414,10 @@ def file_candidate(cand: dict, store: MemoryStore,
     scope = store.get_scope(cand.get("scope", "project-personal"))
     if scope is None:
         scope = store.get_scope("project-personal") or next(iter(store.scopes.values()))
+    if entities.is_entity_kind(cand.get("kind")):
+        # Entity candidates upsert into their pinned topic (shared-safe
+        # inside apply_candidate) instead of fuzzy prose filing.
+        return entities.apply_candidate(cand, scope)
     if scope.scope == "project-shared":
         blocked = blocked_for_shared(str(cand.get("text", "")))
         if blocked:

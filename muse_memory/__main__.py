@@ -380,10 +380,11 @@ def cmd_approve(args) -> int:
 def cmd_eval(args) -> int:
     from muse_memory import evalset
     report = evalset.run_eval()
-    print(json.dumps(report, indent=2))
-    ok = (report["recall_top1"] >= 0.99 and report["recall_at3"] >= 0.99
-          and report["capture_precision"] >= 0.99
-          and report["capture_recall"] >= 0.99)
+    project = evalset.run_project_eval()
+    print(json.dumps({"golden": report, "project": project}, indent=2))
+    ok = all(section[name] >= 0.99 for section in (report, project)
+               for name in ("recall_top1", "recall_at3",
+                            "capture_precision", "capture_recall"))
     return 0 if ok else 1
 
 
