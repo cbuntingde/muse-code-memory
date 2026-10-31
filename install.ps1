@@ -14,7 +14,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Write-Host "== muse-memory install ==" -ForegroundColor Cyan
 
 python3 --version 2>$null
-if ($LASTEXITCODE -ne 0) { throw 'python3 is required on PATH (3.9+). Install it via `winget install -e --id Python.Python.3` or the Microsoft Store (which provides the python3 alias), then re-run.' }
+if ($LASTEXITCODE -ne 0) { throw 'python3 is required on PATH (3.11+). Install it via `winget install -e --id Python.Python.3` or the Microsoft Store (which provides the python3 alias), then re-run.' }
 
 Write-Host '[1/4] Running tests...'
 python3 -m unittest discover -s (Join-Path $root 'tests')

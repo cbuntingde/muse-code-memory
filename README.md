@@ -40,7 +40,7 @@ also at 1.0.
 
 ## Install
 
-Requires Python 3.9+ on `PATH` as `python3` (hooks, MCP server) and `muse` 1.x. On Windows, make sure the `python3` alias exists: either install via `winget install -e --id Python.Python.3`, or enable the Microsoft Store "Python" app execution alias (Settings > Apps > Advanced app settings); the python.org installer alone only provides `python`.
+Requires Python 3.11+ on `PATH` as `python3` (hooks, MCP server) and `muse` 1.x. On Windows, make sure the `python3` alias exists: either install via `winget install -e --id Python.Python.3`, or enable the Microsoft Store "Python" app execution alias (Settings > Apps > Advanced app settings); the python.org installer alone only provides `python`.
 
 ```bash
 muse plugins marketplace add muse-memory https://github.com/cbuntingde/muse-code-memory.git
