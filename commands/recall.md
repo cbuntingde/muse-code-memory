@@ -1,5 +1,5 @@
 ---
-description: Search cross-session memory with RAG
+description: Search cross-session memory
 argument-hint: <query>
 ---
 

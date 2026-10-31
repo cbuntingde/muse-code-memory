@@ -1,39 +1,39 @@
-# muse-memory — Automatic Memory + RAG for Muse Code
+# muse-memory — Automatic Memory for Muse Code
 
-Zero-dependency, hook-driven memory for [Muse Code](https://dev.meta.ai/products/muse-code).
-Install the plugin, restart `muse`, and durable facts start surviving across sessions —
-captured automatically, recalled with built-in retrieval, and maintained without attention.
+Memory for [Muse Code](https://dev.meta.ai/products/muse-code) that needs nothing beyond Python.
+Install the plugin, restart `muse`, and your decisions, files, and commands start surviving across sessions —
+saved automatically, found when you need them, and tidied without attention.
 
 - **Three scopes** — `global` (machine-wide), `project-personal` (private per project,
   shares the native Muse directory), `project-shared` (`<repo>/.agents/memory`, committed)
-- **Automatic capture** — tool outputs mined for durable prose (payload dumps and
-  code fragments rejected), failures recorded, transcripts mined. Captures queue as
-  proposals: rules, decisions, and importance-4+ facts file at Stop/SessionEnd, the
-  rest are held for `/approve` and expire after 7 days (`proposal_ttl_days`)
-- **Project entities** — shell build/test commands, authored files, and
-  project files named in prose are stored verbatim in pinned topics
-  (command ledger, file registry), and each workspace gets an auto-scanned
-  profile (stack, manifests, docs, remote). Entity facts always file at
-  Stop/SessionEnd instead of expiring as proposals, and the profile plus
-  recent commands/files are injected at every prompt, not only on recall hits.
-- **Built-in RAG** — SQLite FTS5 BM25 retrieval (stdlib `sqlite3`, lexical + recency +
-  importance + use signals) over a disposable per-scope `.rag-index.db`, rebuilt from
-  the Markdown topics whenever they change; works offline in hook context, with an
-  in-memory BM25 fallback when FTS5 is unavailable
-- **Self-maintenance** — fragment retirement, dedupe, topic merge, expiry, stale
-  archival, oversize trim, and file-cap retirement (at stop and session end;
-  SessionStart and prompt recall are read-only; pinned topics protected)
-- **Safe by design** — pasted credentials dropped, secret values redacted before filing;
-  every hook is exception-safe and exits 0, with real errors in a rotated diagnostics log
-- **Full agent surface** — 4 MCP tools, 8 slash commands, and a 23-command CLI sharing
-  one implementation (`muse_memory/service.py`)
+- **Automatic capture** — reads tool output for lasting facts (raw data and code
+  skipped), records failures, and reviews transcripts. Most captures wait as
+  proposals: rules, decisions, build commands, project facts, and other
+  high-confidence items are filed when a turn or session ends, while the rest
+  are held for `/approve` and expire after 7 days (`proposal_ttl_days`)
+- **Project basics, remembered** — build and test commands, files you work with,
+  and files named in discussion are stored word-for-word in kept topics
+  (command ledger, file registry), and each project gets an auto-written profile
+  (tools, setup files, docs, code location). These file promptly instead of
+  waiting for approval, and the profile plus recent commands and files are
+  added to every prompt — no search needed.
+- **Built-in search** — finds relevant memories by wording, recency, and importance.
+  Works offline with nothing to install; the search index is rebuilt from your
+  memory files whenever they change.
+- **Self-maintenance** — removes duplicates and clutter, archives stale items,
+  and never touches pinned topics.
+- **Safe by design** — passwords and keys are removed before anything is saved, and
+  team-shared memory refuses anything secret-like outright. Errors go to a log
+  instead of interrupting your session.
+- **Full agent surface** — 4 MCP tools, 8 slash commands, and a 23-command CLI
+  that all behave the same.
 
 Status: version 1.1.0. `muse skills validate` and `muse plugins validate` both return
-`valid: true` with empty diagnostics, and 197 unit/contract tests pass
+`valid: true` with empty diagnostics, and 275 unit/contract tests pass
 (`python3 -m unittest discover -s tests`). The installed plugin was verified live on
 Muse 1.4.7: marketplace update, upgrade, a headless-session `memory_save` /
 `memory_recall` round-trip, a second session recalling the first session's save, and
-uninstall + reinstall (see AUDIT.md). The golden evaluation (`python3 -m muse_memory
+uninstall + reinstall (see AUDIT.md). The quality check (`python3 -m muse_memory
 eval`) reports recall@1, recall@3, capture precision, and capture recall at 1.0 on its
 frozen corpus, plus a project-facts corpus (files, docs, commands, profile)
 also at 1.0.
@@ -72,40 +72,39 @@ then `muse plugins update muse-memory`. Restart `muse` afterwards so hooks load.
 ## How it works
 
 ```
-SessionStart        -> ensure stores, inject digest + project working set;
-                       queue a profile scan when missing (read-only: no sweeps, no index writes)
-UserPromptSubmit    -> working-set block + RAG recall over all scopes; use signals queued
-PostToolUse         -> extract candidates from tool outputs (fragments rejected), queue;
-                       shell commands, authored files, and named project files queue as entities
-PostToolUseFailure  -> same with importance boost + redacted error fallback
-PreCompact          -> snapshot key topics so compaction cannot lose them
-Stop                -> apply use signals, file high-confidence proposals, enforce file cap
-SessionEnd          -> mine transcript tail, file proposals, full maintenance
+SessionStart        -> ensure stores, inject digest + project basics;
+                       queue a profile scan when missing or outdated (startup reads only —
+                       saved memories are never changed there)
+UserPromptSubmit    -> project basics + relevant memories for this prompt; usage noted quietly
+PostToolUse         -> pull possible memories from tool output (raw data skipped), queue;
+                       shell commands, authored files, and named project files queue as facts
+PostToolUseFailure  -> same, treated as more important, with secrets removed from errors
+PreCompact          -> snapshot key topics first so compaction cannot lose them
+Stop                -> record usage, file confident captures, enforce the file cap
+SessionEnd          -> review the session transcript, file proposals, full cleanup
 ```
 
-Capture is heuristic and precision-biased: explicit decisions, always/never rules,
-preferences, fixes, milestones, project changes, and procedural build/toolchain facts (build/test commands, version checks, manifest statements; everyday build verbs only
-with project context; stack statements and dev-doc/plan paths auto-file). Chatter and task-local detail are ignored, and tool
-payloads — JSON dumps, patch bodies, line-numbered dumps, escaped text, terminal
-mojibake, session-log paths — are rejected at extraction time (for shell tools the invoking command is still echoed ahead of the output, so bare version strings stay meaningful), so raw code and
-logs never become memory files. Legacy fragments already on disk are retired to
-`archive/` automatically at the next session end (SessionStart is read-only).
-Pasted credentials are dropped at capture time and remaining secret values are
-redacted (`[redacted:<kind>]`) before anything is filed — including slugs derived
-for topic filenames. Bare security words without values ("token", "password")
-are left alone. The committed `project-shared` scope is fail-closed: credential-like
-or high-entropy content is refused outright there instead of being redacted and filed.
+The plugin saves what is worth keeping: decisions, standing rules, preferences,
+fixes, milestones, project changes, and practical facts (build and test commands,
+version checks, setup-file notes). Everyday chat and task-local detail are ignored,
+and raw tool output — data dumps, patch text, numbered code listings, garbled text,
+session-log paths — is never saved as memory (for shell tools the command itself is
+kept alongside the output, so a bare version number still makes sense). Outdated
+machine artifacts already on disk are moved to `archive/` at the next session end.
+Pasted passwords are dropped on sight and remaining secret values are
+removed (`[redacted:<kind>]`) before anything is filed — including names derived
+for topic files. Words like "token" or "password" on their own are left alone.
+Team-shared memory refuses anything secret-like outright instead of saving a
+cleaned-up copy.
 
-Storage per scope: human-readable topic Markdown files (each with documentary
-frontmatter) + a grouped `MEMORY.md` index with section headers and live footer
-counts, plus dotfile sidecars (`.memory-meta.json`, `.rag-index.db`,
-`.pending.jsonl`, `.access.jsonl`, `.snapshot-*`, `archive/`, `.trash/`). The project-personal scope adopts
-Muse's native slug directory when one already exists, so both systems share
-files instead of forking. Machine truth lives in the sidecars; topic bodies
-roundtrip byte-identically. Three pinned topics (`project-profile.md`,
-`command-ledger.md`, `file-registry.md`) hold the project working set in the
-project scopes; pins win index slots and skip auto-retirement, while the
-standard size trim still bounds their growth.
+Each scope keeps readable Markdown files — one per topic — plus a grouped `MEMORY.md`
+index with live counts, alongside small helper files that hold settings
+(`.memory-meta.json`, `.rag-index.db`, `.pending.jsonl`, `.access.jsonl`,
+`.snapshot-*`, `archive/`, `.trash/`). When Muse already keeps project memory for
+the workspace, the plugin shares that folder instead of starting a second one.
+Three kept topics (`project-profile.md`, `command-ledger.md`, `file-registry.md`)
+hold the project basics; kept topics are always listed and never auto-removed,
+while the normal size limit still applies.
 
 ## Agent surface
 
@@ -114,7 +113,7 @@ Slash commands:
 | Command      | Purpose                                                    |
 |--------------|------------------------------------------------------------|
 | `/remember`  | Save a durable memory now                                  |
-| `/recall`    | Search memory with RAG                                     |
+| `/recall`    | Search memory                                     |
 | `/memories`  | List stored memories in a grouped, filterable table        |
 | `/forget`    | Trash a memory topic (restorable; `--purge` deletes)       |
 | `/archive`   | Retire a topic (still searchable with archive recall)      |
@@ -126,13 +125,13 @@ MCP tools (`memory` server over stdio):
 
 | Tool           | Purpose                                                        |
 |----------------|----------------------------------------------------------------|
-| `memory_recall`| RAG recall (`query`, `top_k`, `include_archive`)               |
+| `memory_recall`| Find relevant memories (`query`, `top_k`, `include_archive`)               |
 | `memory_save`  | Save one durable statement (auto-redacts; `supersedes` archives a replaced topic) |
 | `memory_list`  | Enumerate topics as a Markdown table (filters + `limit`)       |
 | `memory_stats` | Per-scope files, importance histogram, queue, archive, index   |
 
 The `memory` skill teaches agents the recall-first / save-deliberately workflow.
-Listing never marks topics as used, so browsing cannot poison RAG's use signal.
+Browsing never affects what is found later.
 
 ### Reading topics with Muse's native `read_memory`
 
@@ -150,9 +149,8 @@ Pass that scope and path straight to `read_memory` to open the full topic.
 Scope mapping: `global` -> `personal`, `project-personal` -> `personal_project`,
 `project-shared` -> `project`.
 
-The plugin adopts Muse's own project memory directory when it exists (the two
-implementations sanitize and hash workspace paths differently, so adoption
-matches on the sanitized path, not the hash). Topics written before adoption
+The plugin adopts Muse's own project memory directory when it exists (the two systems name project folders differently, so the plugin matches on the
+readable part of the name rather than the trailing code). Topics written before adoption
 are copied across, and free-form notes that Muse wrote into `MEMORY.md` are
 preserved when the plugin rewrites the index.
 
@@ -161,7 +159,7 @@ preserved when the plugin rewrites the index.
 ```bash
 export PYTHONPATH=/path/to/muse-code-memory   # or pip install -e .
 python3 -m muse_memory init                    # seed stores + indexes
-python3 -m muse_memory recall "deploy process" # RAG recall (--explain, --include-archive)
+python3 -m muse_memory recall "deploy process" # find relevant memories (--explain, --include-archive)
 python3 -m muse_memory save "We use Postgres" --auto
 python3 -m muse_memory list --tag decision --min-importance 3 --format markdown
 python3 -m muse_memory doctor | pending | config   # health, queue, effective config
@@ -170,7 +168,7 @@ python3 -m muse_memory export --output bundle.md  # import restores (metadata in
 python3 -m muse_memory consolidate | cleanup | stats | reindex | paths
 python3 -m muse_memory approve                 # file all held capture proposals
 python3 -m muse_memory restore <scope/file>    # undo a forget (trash -> live)
-python3 -m muse_memory eval                    # golden recall/capture evaluation
+python3 -m muse_memory eval                    # recall/capture quality check (general + project facts)
 ```
 
 `save --supersedes <file>` archives the topic a new memory replaces and links both
@@ -183,28 +181,31 @@ including importance/tags, and refuses to overwrite existing files without
 
 Config (all optional, invalid values fall back to defaults):
 `~/.config/muse/memory/config.json` (user) or `<repo>/.muse/memory.json`
-(project). See `config/memory.json` for the core keys with defaults; advanced
-thresholds (`dedupe_threshold`, `merge_threshold`, `stale_days`, `scopes`, and
-capture-size limits) remain accepted but undocumented. Recorded design decisions
-(embeddings and session-end model summarisation parked under the stdlib-only
-offline constraint; explicit supersede instead of contradiction detection) are
-in `dev/IMPROVEMENTS.md`.
+(project). See `config/memory.json` for the core keys with defaults, including
+`working_set_max_chars` (size of the auto-added project block) and
+`entity_sync_enabled` (master switch for the project basics); further
+fine-tuning settings (`dedupe_threshold`, `merge_threshold`, `stale_days`,
+`scopes`, and capture-size limits) still work but are not listed here. Two ideas
+stay parked: meaning-based search (it needs downloads this plugin will not
+require) and automatic contradiction handling (a replaced fact is handed off
+explicitly instead).
 
 ## Layout
 
 ```
 .muse-plugin/plugin.json   native manifest (7 hooks, 1 skill, 8 commands, 1 MCP server)
 .agents/plugins/marketplace.json  marketplace catalog for Git-based install
-hooks/                     one script per lifecycle event + _common.py (import-only)
-muse_memory/               stdlib-only core: paths, store, rag (SQLite FTS5), extractor,
-                           listing, consolidate, lifecycle, config, service, evalset, cli
+hooks/                     one script per lifecycle event + _common.py (shared helpers)
+muse_memory/               core with no extra downloads: paths, store, search, extractor,
+                           entities, listing, consolidate, lifecycle, config, service,
+                           evalset, dates, locking (+ `__main__` command line)
 mcp/server.py              MCP stdio server (recall/save/stats/list)
 skills/memory/SKILL.md     agent instructions for using memory
 commands/                  /remember /recall /memories /forget /archive /consolidate
                            /approve /restore
-tests/                     197 unittest tests incl. hook + MCP contract tests and the
-                           golden recall/capture eval (tests/test_eval_golden.py)
-.github/workflows/ci.yml   unittest matrix + bundle validation when muse is present
+tests/                     275 unittest tests incl. hook + MCP contract tests and both
+                           quality evals (tests/test_eval_golden.py, tests/test_project_eval.py)
+.github/workflows/ci.yml   tests on Python 3.11 + 3.14 (ubuntu + Windows) + bundle validation
 examples/                  best-effort hooks.json / settings hooks block
 ```
 

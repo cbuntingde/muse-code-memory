@@ -590,7 +590,7 @@ def cmd_paths(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="muse-memory",
-                                 description="Automatic memory + RAG for Muse Code")
+                                 description="Automatic memory for Muse Code")
     ap.add_argument("--cwd", default=None, help="workspace path (default: cwd)")
     ap.add_argument("--scopes", nargs="*", default=None,
                     help="limit scopes (global project-personal project-shared)")
@@ -598,7 +598,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="create scope dirs, indexes").set_defaults(fn=cmd_init)
 
-    p = sub.add_parser("recall", help="RAG recall for a query")
+    p = sub.add_parser("recall", help="find relevant memories for a query")
     p.add_argument("query")
     p.add_argument("--top-k", type=int, default=0)
     p.add_argument("--json", action="store_true")
@@ -653,14 +653,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_consolidate)
 
     sub.add_parser("approve", help="file all queued capture proposals").set_defaults(fn=cmd_approve)
-    sub.add_parser("eval", help="run the golden recall/capture evaluation").set_defaults(fn=cmd_eval)
+    sub.add_parser("eval", help="run the recall/capture quality evaluation").set_defaults(fn=cmd_eval)
 
     p = sub.add_parser("cleanup", help="dedupe + merge + expire + trim + caps")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_cleanup)
 
     sub.add_parser("stats", help="scope statistics").set_defaults(fn=cmd_stats)
-    sub.add_parser("reindex", help="rebuild RAG indexes").set_defaults(fn=cmd_reindex)
+    sub.add_parser("reindex", help="rebuild search indexes").set_defaults(fn=cmd_reindex)
 
     p = sub.add_parser("session-end", help="run end-of-session job")
     p.add_argument("--session-id", default="")
