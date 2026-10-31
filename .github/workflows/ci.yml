@@ -4,10 +4,13 @@ on: [push, pull_request]
 
 jobs:
   tests:
+    # Floor + ceiling only: the codebase is stdlib-only with no
+    # version branches, so middle versions add no signal. Both OSes
+    # stay: path, home-dir, and locking behavior differ per platform.
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.9", "3.11", "3.13"]
+        python-version: ["3.9", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
